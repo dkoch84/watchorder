@@ -18,33 +18,11 @@ CONFIG_DIR = xbmcvfs.translatePath(
 )
 CONFIG_PATH = CONFIG_DIR + "collections.json"
 
-DEFAULT_CONFIG = {"collections": [], "views": {}}
+DEFAULT_CONFIG = {"collections": []}
 
 
 def build_url(params):
     return "{}?{}".format(BASE_URL, urlencode(params))
-
-
-def get_view_mode(category):
-    config = load_config()
-    return config.get("views", {}).get(category)
-
-
-def set_view_mode(category):
-    view = xbmc.getInfoLabel("Container.ViewMode")
-    if not view:
-        return
-    config = load_config()
-    if "views" not in config:
-        config["views"] = {}
-    config["views"][category] = int(view)
-    save_config(config)
-    xbmcgui.Dialog().notification(
-        "TV Collections",
-        "View saved for {}".format(category),
-        xbmcgui.NOTIFICATION_INFO,
-    )
-    xbmc.executebuiltin("Container.Refresh")
 
 
 def jsonrpc(method, params=None):
@@ -57,6 +35,30 @@ def jsonrpc(method, params=None):
     except Exception as e:
         xbmc.log("{}: JSON-RPC error: {}".format(ADDON_ID, e), xbmc.LOGERROR)
         return None
+
+
+_forced_views_checked = False
+
+
+def ensure_forced_views():
+    global _forced_views_checked
+    if _forced_views_checked:
+        return
+    _forced_views_checked = True
+    seasons_view = xbmc.getInfoLabel('Skin.String(Skin.ForcedView.seasons)')
+    episodes_view = xbmc.getInfoLabel('Skin.String(Skin.ForcedView.episodes)')
+    if not seasons_view:
+        name = xbmc.getInfoLabel('$LOCALIZE[538]')  # "Big icons"
+        if name:
+            xbmc.executebuiltin(
+                'Skin.SetString(Skin.ForcedView.seasons,{})'.format(name)
+            )
+    if not episodes_view:
+        name = xbmc.getInfoLabel('$LOCALIZE[31289]')  # "Landscape"
+        if name:
+            xbmc.executebuiltin(
+                'Skin.SetString(Skin.ForcedView.episodes,{})'.format(name)
+            )
 
 
 def load_config():
@@ -88,7 +90,10 @@ def save_config(config):
 
 def get_library_shows(tag=None, properties=None):
     if properties is None:
-        properties = ["title", "art", "year", "genre", "rating", "plot", "dateadded"]
+        properties = [
+            "title", "art", "year", "genre", "rating", "plot",
+            "dateadded", "lastplayed",
+        ]
     params = {"properties": properties}
     if tag:
         params["filter"] = {"field": "tag", "operator": "is", "value": tag}
@@ -166,18 +171,23 @@ def list_titles(tag=None):
             tag_info.setMediaType("tvshow")
             tag_info.setTitle(col["name"])
             tag_info.setPlot(col.get("description", ""))
+
+            # Max lastplayed across member shows
+            max_lp = ""
+            for member_title in col["shows"]:
+                member = library_lookup.get(member_title.lower())
+                if member:
+                    lp = member.get("lastplayed", "")
+                    if lp > max_lp:
+                        max_lp = lp
+            if max_lp:
+                tag_info.setLastPlayed(max_lp)
+
             if art:
                 li.setArt(art)
 
             # Context menu for collection entries
             li.addContextMenuItems([
-                (
-                    "Set as default view",
-                    "RunPlugin({})".format(build_url({
-                        "action": "set_view_mode",
-                        "category": "tvshows",
-                    })),
-                ),
                 (
                     "Set Collection Art",
                     "RunPlugin({})".format(build_url({
@@ -206,6 +216,8 @@ def list_titles(tag=None):
             tag_info.setRating(show.get("rating", 0.0))
             if show.get("dateadded"):
                 tag_info.setDateAdded(show["dateadded"])
+            if show.get("lastplayed"):
+                tag_info.setLastPlayed(show["lastplayed"])
             genres = show.get("genre", [])
             if genres:
                 tag_info.setGenres(genres)
@@ -214,13 +226,6 @@ def list_titles(tag=None):
 
             # Context menu for regular shows
             li.addContextMenuItems([
-                (
-                    "Set as default view",
-                    "RunPlugin({})".format(build_url({
-                        "action": "set_view_mode",
-                        "category": "tvshows",
-                    })),
-                ),
                 (
                     "Add to TV Collection",
                     "RunPlugin({})".format(build_url({
@@ -242,12 +247,9 @@ def list_titles(tag=None):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_GENRE)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_RATING)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LASTPLAYED)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
-
-    view = get_view_mode("tvshows")
-    if view:
-        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def list_collection_shows(collection_index):
@@ -279,6 +281,8 @@ def list_collection_shows(collection_index):
         tag_info.setRating(show.get("rating", 0.0))
         if show.get("dateadded"):
             tag_info.setDateAdded(show["dateadded"])
+        if show.get("lastplayed"):
+            tag_info.setLastPlayed(show["lastplayed"])
         genres = show.get("genre", [])
         if genres:
             tag_info.setGenres(genres)
@@ -315,13 +319,6 @@ def list_collection_shows(collection_index):
                 "pos": pos,
             })),
         ))
-        ctx.append((
-            "Set as default view",
-            "RunPlugin({})".format(build_url({
-                "action": "set_view_mode",
-                "category": "collections",
-            })),
-        ))
         li.addContextMenuItems(ctx)
 
         url = build_url({
@@ -348,12 +345,9 @@ def list_collection_shows(collection_index):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_GENRE)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_RATING)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LASTPLAYED)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
-
-    view = get_view_mode("collections")
-    if view:
-        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def action_add_to_collection(title):
@@ -527,7 +521,7 @@ def action_remove_from_collection(collection_index, pos):
 
     shows = collections[collection_index]["shows"]
     if pos < len(shows):
-        removed = shows.pop(pos)
+        shows.pop(pos)
         # If collection is now empty, remove it entirely
         if not shows:
             collections.pop(collection_index)
@@ -555,42 +549,30 @@ def list_seasons(tvshowid):
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
-    xbmcplugin.setContent(HANDLE, "seasons")
-    for season in seasons:
-        label = season.get("label", "Season {}".format(season["season"]))
-        li = xbmcgui.ListItem(label)
+    try:
+        xbmcplugin.setContent(HANDLE, "seasons")
+        for season in seasons:
+            label = season.get("label", "Season {}".format(season["season"]))
+            li = xbmcgui.ListItem(label)
 
-        tag_info = li.getVideoInfoTag()
-        tag_info.setMediaType("season")
-        tag_info.setSeason(season["season"])
+            tag_info = li.getVideoInfoTag()
+            tag_info.setMediaType("season")
+            tag_info.setSeason(season["season"])
 
-        if season.get("art"):
-            li.setArt(season["art"])
+            if season.get("art"):
+                li.setArt(season["art"])
 
-        li.addContextMenuItems([
-            (
-                "Set as default view",
-                "RunPlugin({})".format(build_url({
-                    "action": "set_view_mode",
-                    "category": "seasons",
-                })),
-            ),
-        ])
+            url = build_url({
+                "action": "episodes",
+                "tvshowid": tvshowid,
+                "season": season["season"],
+            })
+            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
-        url = build_url({
-            "action": "episodes",
-            "tvshowid": tvshowid,
-            "season": season["season"],
-        })
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
-
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
-    xbmcplugin.endOfDirectory(HANDLE)
-
-    view = get_view_mode("seasons")
-    if view:
-        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
+        xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+        xbmcplugin.endOfDirectory(HANDLE)
+    except RuntimeError:
+        pass
 
 
 def list_episodes(tvshowid, season):
@@ -614,76 +596,56 @@ def list_episodes(tvshowid, season):
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
-    xbmcplugin.setContent(HANDLE, "episodes")
-    for ep in episodes:
-        label = "{}x{:02d}. {}".format(ep["season"], ep["episode"], ep["title"])
-        li = xbmcgui.ListItem(label)
+    try:
+        xbmcplugin.setContent(HANDLE, "episodes")
+        for ep in episodes:
+            label = "{}x{:02d}. {}".format(ep["season"], ep["episode"], ep["title"])
+            li = xbmcgui.ListItem(label)
 
-        tag_info = li.getVideoInfoTag()
-        tag_info.setMediaType("episode")
-        tag_info.setTitle(ep["title"])
-        tag_info.setTvShowTitle(ep.get("showtitle", ""))
-        tag_info.setSeason(ep["season"])
-        tag_info.setEpisode(ep["episode"])
-        tag_info.setPlot(ep.get("plot", ""))
-        tag_info.setFirstAired(ep.get("firstaired", ""))
-        tag_info.setRating(ep.get("rating", 0.0))
-        tag_info.setPlaycount(ep.get("playcount", 0))
-        tag_info.setLastPlayed(ep.get("lastplayed", ""))
-        if ep.get("dateadded"):
-            tag_info.setDateAdded(ep["dateadded"])
+            tag_info = li.getVideoInfoTag()
+            tag_info.setMediaType("episode")
+            tag_info.setTitle(ep["title"])
+            tag_info.setTvShowTitle(ep.get("showtitle", ""))
+            tag_info.setSeason(ep["season"])
+            tag_info.setEpisode(ep["episode"])
+            tag_info.setPlot(ep.get("plot", ""))
+            tag_info.setFirstAired(ep.get("firstaired", ""))
+            tag_info.setRating(ep.get("rating", 0.0))
+            tag_info.setPlaycount(ep.get("playcount", 0))
+            tag_info.setLastPlayed(ep.get("lastplayed", ""))
+            if ep.get("dateadded"):
+                tag_info.setDateAdded(ep["dateadded"])
 
-        runtime = ep.get("runtime", 0)
-        if runtime:
-            tag_info.setDuration(runtime)
+            runtime = ep.get("runtime", 0)
+            if runtime:
+                tag_info.setDuration(runtime)
 
-        directors = ep.get("director", [])
-        if directors:
-            tag_info.setDirectors(directors)
+            directors = ep.get("director", [])
+            if directors:
+                tag_info.setDirectors(directors)
 
-        writers = ep.get("writer", [])
-        if writers:
-            tag_info.setWriters(writers)
+            writers = ep.get("writer", [])
+            if writers:
+                tag_info.setWriters(writers)
 
-        resume = ep.get("resume", {})
-        if resume.get("position", 0) > 0:
-            tag_info.setResumePoint(resume["position"], resume.get("total", 0))
+            resume = ep.get("resume", {})
+            if resume.get("position", 0) > 0:
+                tag_info.setResumePoint(resume["position"], resume.get("total", 0))
 
-        if ep.get("art"):
-            li.setArt(ep["art"])
+            if ep.get("art"):
+                li.setArt(ep["art"])
 
-        li.addContextMenuItems([
-            (
-                "Set as default view",
-                "RunPlugin({})".format(build_url({
-                    "action": "set_view_mode",
-                    "category": "episodes",
-                })),
-            ),
-        ])
+            li.setProperty("IsPlayable", "true")
+            url = build_url({
+                "action": "play",
+                "episodeid": ep["episodeid"],
+                "file": ep.get("file", ""),
+            })
+            xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
-        li.setProperty("IsPlayable", "true")
-        url = build_url({
-            "action": "play",
-            "episodeid": ep["episodeid"],
-            "file": ep.get("file", ""),
-        })
-        xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
-
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_EPISODE)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE_IGNORE_THE)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATE)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_VIDEO_RATING)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_PLAYCOUNT)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DURATION)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
-    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
-    xbmcplugin.endOfDirectory(HANDLE)
-
-    view = get_view_mode("episodes")
-    if view:
-        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
+        xbmcplugin.endOfDirectory(HANDLE)
+    except RuntimeError:
+        pass
 
 
 def play_episode(episodeid, file):
@@ -702,6 +664,7 @@ def play_episode(episodeid, file):
 
 
 def router():
+    ensure_forced_views()
     params = parse_qs(sys.argv[2].lstrip("?"))
     action = params.get("action", [None])[0]
 
@@ -744,8 +707,6 @@ def router():
             int(params["index"][0]),
             int(params["pos"][0]),
         )
-    elif action == "set_view_mode":
-        set_view_mode(params["category"][0])
 
 
 if __name__ == "__main__":
