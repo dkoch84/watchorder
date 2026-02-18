@@ -66,7 +66,7 @@ def save_config(config):
 
 def get_library_shows(tag=None, properties=None):
     if properties is None:
-        properties = ["title", "art", "year", "genre", "rating", "plot"]
+        properties = ["title", "art", "year", "genre", "rating", "plot", "dateadded"]
     params = {"properties": properties}
     if tag:
         params["filter"] = {"field": "tag", "operator": "is", "value": tag}
@@ -95,6 +95,8 @@ def list_tags():
         url = build_url({"tag": t})
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -173,6 +175,8 @@ def list_titles(tag=None):
             tag_info.setPlot(show.get("plot", ""))
             tag_info.setYear(show.get("year", 0))
             tag_info.setRating(show.get("rating", 0.0))
+            if show.get("dateadded"):
+                tag_info.setDateAdded(show["dateadded"])
             genres = show.get("genre", [])
             if genres:
                 tag_info.setGenres(genres)
@@ -197,6 +201,12 @@ def list_titles(tag=None):
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE_IGNORE_THE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_YEAR)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_GENRE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_RATING)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -227,6 +237,8 @@ def list_collection_shows(collection_index):
         tag_info.setPlot(show.get("plot", ""))
         tag_info.setYear(show.get("year", 0))
         tag_info.setRating(show.get("rating", 0.0))
+        if show.get("dateadded"):
+            tag_info.setDateAdded(show["dateadded"])
         genres = show.get("genre", [])
         if genres:
             tag_info.setGenres(genres)
@@ -284,6 +296,12 @@ def list_collection_shows(collection_index):
         )
 
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE_IGNORE_THE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_YEAR)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_GENRE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_RATING)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -505,6 +523,8 @@ def list_seasons(tvshowid):
         })
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=True)
 
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -517,7 +537,7 @@ def list_episodes(tvshowid, season):
             "properties": [
                 "title", "plot", "season", "episode", "showtitle",
                 "firstaired", "runtime", "rating", "director", "writer",
-                "art", "file", "playcount", "resume", "lastplayed",
+                "art", "file", "playcount", "resume", "lastplayed", "dateadded",
             ],
         },
     )
@@ -545,6 +565,8 @@ def list_episodes(tvshowid, season):
         tag_info.setRating(ep.get("rating", 0.0))
         tag_info.setPlaycount(ep.get("playcount", 0))
         tag_info.setLastPlayed(ep.get("lastplayed", ""))
+        if ep.get("dateadded"):
+            tag_info.setDateAdded(ep["dateadded"])
 
         runtime = ep.get("runtime", 0)
         if runtime:
@@ -573,6 +595,15 @@ def list_episodes(tvshowid, season):
         })
         xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_EPISODE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_TITLE_IGNORE_THE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATE)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_RATING)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_PLAYCOUNT)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DURATION)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
+    xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
