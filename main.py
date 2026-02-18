@@ -37,6 +37,27 @@ def jsonrpc(method, params=None):
         return None
 
 
+def get_kodi_setting(setting_id):
+    result = jsonrpc("Settings.GetSettingValue", {"setting": setting_id})
+    if result and "value" in result:
+        return result["value"]
+    return None
+
+
+def _select_first_unwatched(first_unwatched_index):
+    if first_unwatched_index is None or first_unwatched_index < 0:
+        return
+    setting = get_kodi_setting("videolibrary.tvshowsselectfirstunwatcheditem")
+    if not setting or setting == 0:
+        return
+    xbmc.sleep(150)
+    container_id = xbmc.getInfoLabel("System.CurrentControlID")
+    if container_id:
+        xbmc.executebuiltin(
+            "SetFocus({},{},absolute)".format(container_id, first_unwatched_index)
+        )
+
+
 _forced_views_checked = False
 
 
@@ -549,9 +570,26 @@ def list_seasons(tvshowid):
         xbmcplugin.endOfDirectory(HANDLE, succeeded=False)
         return
 
+    # Flatten logic: respect Kodi's videolibrary.flattentvshows setting
+    # 0 = never, 1 = if single season (default), 2 = always
+    flatten = get_kodi_setting("videolibrary.flattentvshows")
+    if flatten == 2:
+        list_episodes(tvshowid, None)
+        return
+    if flatten == 1:
+        non_special = [s for s in seasons if s["season"] != 0]
+        has_specials = any(s["season"] == 0 for s in seasons)
+        if len(non_special) == 1 and not has_specials:
+            list_episodes(tvshowid, non_special[0]["season"])
+            return
+
     try:
         xbmcplugin.setContent(HANDLE, "seasons")
-        for season in seasons:
+        first_unwatched_index = None
+        for idx, season in enumerate(seasons):
+            if first_unwatched_index is None and season.get("playcount", 0) == 0:
+                first_unwatched_index = idx
+
             label = season.get("label", "Season {}".format(season["season"]))
             li = xbmcgui.ListItem(label)
 
@@ -571,23 +609,23 @@ def list_seasons(tvshowid):
 
         xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
         xbmcplugin.endOfDirectory(HANDLE)
+        _select_first_unwatched(first_unwatched_index)
     except RuntimeError:
         pass
 
 
 def list_episodes(tvshowid, season):
-    result = jsonrpc(
-        "VideoLibrary.GetEpisodes",
-        {
-            "tvshowid": tvshowid,
-            "season": season,
-            "properties": [
-                "title", "plot", "season", "episode", "showtitle",
-                "firstaired", "runtime", "rating", "director", "writer",
-                "art", "file", "playcount", "resume", "lastplayed", "dateadded",
-            ],
-        },
-    )
+    params = {
+        "tvshowid": tvshowid,
+        "properties": [
+            "title", "plot", "season", "episode", "showtitle",
+            "firstaired", "runtime", "rating", "director", "writer",
+            "art", "file", "playcount", "resume", "lastplayed", "dateadded",
+        ],
+    }
+    if season is not None:
+        params["season"] = season
+    result = jsonrpc("VideoLibrary.GetEpisodes", params)
     episodes = result.get("episodes", []) if result else []
     if not episodes:
         xbmcgui.Dialog().notification(
@@ -598,7 +636,11 @@ def list_episodes(tvshowid, season):
 
     try:
         xbmcplugin.setContent(HANDLE, "episodes")
-        for ep in episodes:
+        first_unwatched_index = None
+        for idx, ep in enumerate(episodes):
+            if first_unwatched_index is None and ep.get("playcount", 0) == 0:
+                first_unwatched_index = idx
+
             label = "{}x{:02d}. {}".format(ep["season"], ep["episode"], ep["title"])
             li = xbmcgui.ListItem(label)
 
@@ -644,6 +686,7 @@ def list_episodes(tvshowid, season):
             xbmcplugin.addDirectoryItem(HANDLE, url, li, isFolder=False)
 
         xbmcplugin.endOfDirectory(HANDLE)
+        _select_first_unwatched(first_unwatched_index)
     except RuntimeError:
         pass
 
