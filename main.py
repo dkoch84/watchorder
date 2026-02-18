@@ -18,11 +18,33 @@ CONFIG_DIR = xbmcvfs.translatePath(
 )
 CONFIG_PATH = CONFIG_DIR + "collections.json"
 
-DEFAULT_CONFIG = {"collections": []}
+DEFAULT_CONFIG = {"collections": [], "views": {}}
 
 
 def build_url(params):
     return "{}?{}".format(BASE_URL, urlencode(params))
+
+
+def get_view_mode(category):
+    config = load_config()
+    return config.get("views", {}).get(category)
+
+
+def set_view_mode(category):
+    view = xbmc.getInfoLabel("Container.ViewMode")
+    if not view:
+        return
+    config = load_config()
+    if "views" not in config:
+        config["views"] = {}
+    config["views"][category] = int(view)
+    save_config(config)
+    xbmcgui.Dialog().notification(
+        "TV Collections",
+        "View saved for {}".format(category),
+        xbmcgui.NOTIFICATION_INFO,
+    )
+    xbmc.executebuiltin("Container.Refresh")
 
 
 def jsonrpc(method, params=None):
@@ -150,6 +172,13 @@ def list_titles(tag=None):
             # Context menu for collection entries
             li.addContextMenuItems([
                 (
+                    "Set as default view",
+                    "RunPlugin({})".format(build_url({
+                        "action": "set_view_mode",
+                        "category": "tvshows",
+                    })),
+                ),
+                (
                     "Set Collection Art",
                     "RunPlugin({})".format(build_url({
                         "action": "set_collection_art",
@@ -186,6 +215,13 @@ def list_titles(tag=None):
             # Context menu for regular shows
             li.addContextMenuItems([
                 (
+                    "Set as default view",
+                    "RunPlugin({})".format(build_url({
+                        "action": "set_view_mode",
+                        "category": "tvshows",
+                    })),
+                ),
+                (
                     "Add to TV Collection",
                     "RunPlugin({})".format(build_url({
                         "action": "add_to_collection",
@@ -208,6 +244,10 @@ def list_titles(tag=None):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
+
+    view = get_view_mode("tvshows")
+    if view:
+        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def list_collection_shows(collection_index):
@@ -275,6 +315,13 @@ def list_collection_shows(collection_index):
                 "pos": pos,
             })),
         ))
+        ctx.append((
+            "Set as default view",
+            "RunPlugin({})".format(build_url({
+                "action": "set_view_mode",
+                "category": "collections",
+            })),
+        ))
         li.addContextMenuItems(ctx)
 
         url = build_url({
@@ -303,6 +350,10 @@ def list_collection_shows(collection_index):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
+
+    view = get_view_mode("collections")
+    if view:
+        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def action_add_to_collection(title):
@@ -516,6 +567,16 @@ def list_seasons(tvshowid):
         if season.get("art"):
             li.setArt(season["art"])
 
+        li.addContextMenuItems([
+            (
+                "Set as default view",
+                "RunPlugin({})".format(build_url({
+                    "action": "set_view_mode",
+                    "category": "seasons",
+                })),
+            ),
+        ])
+
         url = build_url({
             "action": "episodes",
             "tvshowid": tvshowid,
@@ -526,6 +587,10 @@ def list_seasons(tvshowid):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_NONE)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.endOfDirectory(HANDLE)
+
+    view = get_view_mode("seasons")
+    if view:
+        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def list_episodes(tvshowid, season):
@@ -587,6 +652,16 @@ def list_episodes(tvshowid, season):
         if ep.get("art"):
             li.setArt(ep["art"])
 
+        li.addContextMenuItems([
+            (
+                "Set as default view",
+                "RunPlugin({})".format(build_url({
+                    "action": "set_view_mode",
+                    "category": "episodes",
+                })),
+            ),
+        ])
+
         li.setProperty("IsPlayable", "true")
         url = build_url({
             "action": "play",
@@ -605,6 +680,10 @@ def list_episodes(tvshowid, season):
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_DATEADDED)
     xbmcplugin.addSortMethod(HANDLE, xbmcplugin.SORT_METHOD_UNSORTED)
     xbmcplugin.endOfDirectory(HANDLE)
+
+    view = get_view_mode("episodes")
+    if view:
+        xbmc.executebuiltin("Container.SetViewMode({})".format(view))
 
 
 def play_episode(episodeid, file):
@@ -665,6 +744,8 @@ def router():
             int(params["index"][0]),
             int(params["pos"][0]),
         )
+    elif action == "set_view_mode":
+        set_view_mode(params["category"][0])
 
 
 if __name__ == "__main__":
