@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+    <category label="General">
+        <setting id="shared_collections" label="Enable shared collections (requires MySQL)"
+                 type="bool" default="true" />
+    </category>
+    <category label="Movie Collections">
+        <setting label="Migrate Movie Sets" type="action"
+                 action="RunPlugin(plugin://plugin.video.watchorder/?action=migrate_sets)"
+                 option="close" />
+    </category>
+</settings>
