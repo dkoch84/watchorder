@@ -19,6 +19,10 @@ _mysql_settings_parsed = False
 _connection = None
 _warned = False
 
+# Video DB connection cache (separate from _connection which is gated on shared_collections)
+_video_connection = None
+_video_db_name = None
+
 
 def get_mysql_settings():
     """Return dict with host/port/user/pass from advancedsettings.xml, or None."""
@@ -149,25 +153,67 @@ def db_load_config():
         return None
 
 
+def _get_video_connection():
+    """Return a cached MySQL connection for Kodi's video DB, or None."""
+    global _video_connection
+
+    try:
+        import mysql.connector
+    except ImportError:
+        return None
+
+    settings = get_mysql_settings()
+    if not settings:
+        return None
+
+    if _video_connection is not None:
+        try:
+            _video_connection.ping(reconnect=True, attempts=1, delay=0)
+            return _video_connection
+        except Exception:
+            _video_connection = None
+
+    try:
+        _video_connection = mysql.connector.connect(
+            host=settings["host"],
+            port=settings["port"],
+            user=settings["user"],
+            password=settings["password"],
+            connection_timeout=3,
+        )
+        return _video_connection
+    except Exception as e:
+        xbmc.log(
+            "{}: video DB connection failed: {}".format(_ADDON_ID, e),
+            xbmc.LOGWARNING,
+        )
+        _video_connection = None
+        return None
+
+
+def _get_video_db_name(conn):
+    """Return the latest MyVideos DB name, caching the result."""
+    global _video_db_name
+    if _video_db_name is not None:
+        return _video_db_name
+    cur = conn.cursor()
+    cur.execute("SHOW DATABASES LIKE 'MyVideos%'")
+    dbs = [row[0] for row in cur.fetchall()]
+    cur.close()
+    if dbs:
+        _video_db_name = sorted(dbs)[-1]
+    return _video_db_name
+
+
 def get_linked_movie_ids(tvshowid):
     """Get movie IDs linked to a TV show from Kodi's video database."""
     # Try MySQL first
-    settings = get_mysql_settings()
-    if settings:
+    conn = _get_video_connection()
+    if conn is not None:
         try:
-            import mysql.connector
-            conn = mysql.connector.connect(
-                host=settings["host"],
-                port=settings["port"],
-                user=settings["user"],
-                password=settings["password"],
-                connection_timeout=3,
-            )
-            cur = conn.cursor()
-            cur.execute("SHOW DATABASES LIKE 'MyVideos%'")
-            dbs = [row[0] for row in cur.fetchall()]
-            if dbs:
-                video_db = sorted(dbs)[-1]
+            video_db = _get_video_db_name(conn)
+            if video_db:
+                cur = conn.cursor()
                 cur.execute(
                     ("SELECT idMovie FROM `{}`.movielinktvshow"
                      " WHERE idShow = %s").format(video_db),
@@ -175,10 +221,7 @@ def get_linked_movie_ids(tvshowid):
                 )
                 ids = [row[0] for row in cur.fetchall()]
                 cur.close()
-                conn.close()
                 return ids
-            cur.close()
-            conn.close()
         except Exception as e:
             xbmc.log(
                 "{}: get_linked_movie_ids MySQL error: {}".format(

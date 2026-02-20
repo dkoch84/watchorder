@@ -1,4 +1,5 @@
 import json
+import time
 
 import xbmc
 import xbmcgui
@@ -33,6 +34,42 @@ def _label(media_type):
     return "TV" if media_type == "tv" else "Movie"
 
 
+# -- Window property cache ----------------------------------------------------
+
+_CACHE_PREFIX = "watchorder."
+_CACHE_TTL = 300  # seconds
+
+
+def _cache_get(key, ttl=_CACHE_TTL):
+    """Return cached value from Kodi home-window properties, or None if expired."""
+    win = xbmcgui.Window(10000)
+    raw = win.getProperty(_CACHE_PREFIX + key)
+    if not raw:
+        return None
+    try:
+        stored = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if time.time() - stored.get("t", 0) > ttl:
+        return None
+    return stored.get("v")
+
+
+def _cache_set(key, value):
+    """Store a value in Kodi home-window properties with a timestamp."""
+    win = xbmcgui.Window(10000)
+    win.setProperty(
+        _CACHE_PREFIX + key,
+        json.dumps({"t": time.time(), "v": value}),
+    )
+
+
+def _cache_clear(key):
+    """Remove a cached value from Kodi home-window properties."""
+    win = xbmcgui.Window(10000)
+    win.clearProperty(_CACHE_PREFIX + key)
+
+
 # -- Config I/O ---------------------------------------------------------------
 
 def _ensure_keys(config):
@@ -48,10 +85,17 @@ def load_config():
     from main import ADDON_ID, CONFIG_DIR, CONFIG_PATH
     from db import db_load_config
 
+    # Check window-property cache first
+    cached = _cache_get("config")
+    if cached is not None:
+        return cached
+
     # Try MySQL first
     mysql_config = db_load_config()
     if mysql_config is not None:
-        return _ensure_keys(mysql_config)
+        config = _ensure_keys(mysql_config)
+        _cache_set("config", config)
+        return config
 
     # Fall back to local JSON
     if not xbmcvfs.exists(CONFIG_DIR):
@@ -62,6 +106,7 @@ def load_config():
         with xbmcvfs.File(CONFIG_PATH, "r") as f:
             config = json.loads(f.read())
         _ensure_keys(config)
+        _cache_set("config", config)
         return config
     except Exception as e:
         xbmc.log(
@@ -74,6 +119,9 @@ def save_config(config):
     from main import CONFIG_DIR, CONFIG_PATH
     from db import db_save_config
 
+    # Clear cache before writing so failures don't leave stale data
+    _cache_clear("config")
+
     # Always write local JSON first (backup / fallback)
     if not xbmcvfs.exists(CONFIG_DIR):
         xbmcvfs.mkdirs(CONFIG_DIR)
@@ -82,6 +130,9 @@ def save_config(config):
 
     # Best-effort write to MySQL
     db_save_config(config)
+
+    # Re-populate cache with the saved config
+    _cache_set("config", config)
 
 
 # -- Tag folders ---------------------------------------------------------------

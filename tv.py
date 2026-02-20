@@ -171,9 +171,10 @@ def list_titles(tag=None, collections_only=False):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def _collection_level_movie_ids():
+def _collection_level_movie_ids(config=None):
     """Return set of movie IDs placed at collection level."""
-    config = load_config()
+    if config is None:
+        config = load_config()
     ids = set()
     for col in config.get("collections", []):
         for entry in col.get("shows", []):
@@ -230,7 +231,7 @@ _MOVIE_PROPS = [
 ]
 
 
-def _fetch_linked_movies(tvshowid, jsonrpc):
+def _fetch_linked_movies(tvshowid, jsonrpc, config=None):
     """Fetch linked movie details, returning {movieid: details} dict.
 
     Excludes movies placed at collection level.
@@ -240,7 +241,7 @@ def _fetch_linked_movies(tvshowid, jsonrpc):
     linked_ids = get_linked_movie_ids(tvshowid)
     if not linked_ids:
         return {}
-    col_ids = _collection_level_movie_ids()
+    col_ids = _collection_level_movie_ids(config=config)
     movie_details = {}
     for mid in linked_ids:
         if mid in col_ids:
@@ -254,9 +255,10 @@ def _fetch_linked_movies(tvshowid, jsonrpc):
     return movie_details
 
 
-def _merge_show_items(seasons, movie_details, tvshowid):
+def _merge_show_items(seasons, movie_details, tvshowid, config=None):
     """Merge seasons and linked movies using stored order or default."""
-    config = load_config()
+    if config is None:
+        config = load_config()
     stored = config.get("show_item_order", {}).get(str(tvshowid), [])
 
     season_map = {s["season"]: s for s in seasons}
@@ -285,21 +287,24 @@ def _merge_show_items(seasons, movie_details, tvshowid):
     return items
 
 
-def _find_collection_for_show(tvshowid, jsonrpc):
+def _find_collection_for_show(tvshowid, jsonrpc, config=None, show_title=None):
     """Find the collection index that contains the given show, or -1."""
-    result = jsonrpc(
-        "VideoLibrary.GetTVShowDetails",
-        {"tvshowid": tvshowid, "properties": ["title"]},
-    )
-    if not result or "tvshowdetails" not in result:
-        return -1
-    show_title = result["tvshowdetails"]["title"].lower()
+    if show_title is None:
+        result = jsonrpc(
+            "VideoLibrary.GetTVShowDetails",
+            {"tvshowid": tvshowid, "properties": ["title"]},
+        )
+        if not result or "tvshowdetails" not in result:
+            return -1
+        show_title = result["tvshowdetails"]["title"]
 
-    config = load_config()
+    show_title_lower = show_title.lower()
+    if config is None:
+        config = load_config()
     for idx, col in enumerate(config.get("collections", [])):
         for entry in col.get("shows", []):
             if isinstance(entry, str) and not entry.startswith("movie:"):
-                if entry.lower() == show_title:
+                if entry.lower() == show_title_lower:
                     return idx
     return -1
 
@@ -338,14 +343,18 @@ def list_seasons(tvshowid):
 
     show_result = jsonrpc(
         "VideoLibrary.GetTVShowDetails",
-        {"tvshowid": tvshowid, "properties": ["plot", "genre"]},
+        {"tvshowid": tvshowid, "properties": ["plot", "genre", "title"]},
     )
     show_info = show_result.get("tvshowdetails", {}) if show_result else {}
 
-    movie_details = _fetch_linked_movies(tvshowid, jsonrpc)
-    items = _merge_show_items(seasons, movie_details, tvshowid)
+    config = load_config()
+    movie_details = _fetch_linked_movies(tvshowid, jsonrpc, config=config)
+    items = _merge_show_items(seasons, movie_details, tvshowid, config=config)
 
-    col_idx = _find_collection_for_show(tvshowid, jsonrpc)
+    col_idx = _find_collection_for_show(
+        tvshowid, jsonrpc, config=config,
+        show_title=show_info.get("title"),
+    )
 
     try:
         xbmcplugin.setContent(HANDLE, "seasons")
@@ -446,12 +455,12 @@ def action_move_show_item(tvshowid, pos, direction):
     seasons = result.get("seasons", []) if result else []
     season_set = {s["season"] for s in seasons}
 
+    config = load_config()
+
     linked_ids = get_linked_movie_ids(tvshowid)
-    col_ids = _collection_level_movie_ids()
+    col_ids = _collection_level_movie_ids(config=config)
     linked_ids = [mid for mid in linked_ids if mid not in col_ids]
     movie_set = set(linked_ids)
-
-    config = load_config()
     stored = config.get("show_item_order", {}).get(str(tvshowid), [])
 
     if stored:
@@ -655,8 +664,9 @@ def _add_linked_movies(tvshowid):
     if not linked_ids:
         return
 
-    col_ids = _collection_level_movie_ids()
-    col_idx = _find_collection_for_show(tvshowid, jsonrpc)
+    config = load_config()
+    col_ids = _collection_level_movie_ids(config=config)
+    col_idx = _find_collection_for_show(tvshowid, jsonrpc, config=config)
 
     for mid in linked_ids:
         if mid in col_ids:
