@@ -201,6 +201,9 @@ def play_movie(movieid, file):
             file = result["moviedetails"].get("file", "")
     if file:
         li = xbmcgui.ListItem(path=file)
+        tag = li.getVideoInfoTag()
+        tag.setMediaType("movie")
+        tag.setDbId(movieid)
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())

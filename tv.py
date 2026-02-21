@@ -710,6 +710,9 @@ def play_episode(episodeid, file):
             file = result["episodedetails"].get("file", "")
     if file:
         li = xbmcgui.ListItem(path=file)
+        tag = li.getVideoInfoTag()
+        tag.setMediaType("episode")
+        tag.setDbId(episodeid)
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
