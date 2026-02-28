@@ -77,11 +77,17 @@ def action_set_watched(params):
     playcount = int(params["playcount"][0])
 
     if media == "episode":
-        jsonrpc("VideoLibrary.SetEpisodeDetails",
-                {"episodeid": int(params["id"][0]), "playcount": playcount})
+        details = {"episodeid": int(params["id"][0]), "playcount": playcount}
+        # Clear resume point when marking as watched
+        if playcount > 0:
+            details["resume"] = {"position": 0, "total": 0}
+        jsonrpc("VideoLibrary.SetEpisodeDetails", details)
     elif media == "movie":
-        jsonrpc("VideoLibrary.SetMovieDetails",
-                {"movieid": int(params["id"][0]), "playcount": playcount})
+        details = {"movieid": int(params["id"][0]), "playcount": playcount}
+        # Clear resume point when marking as watched
+        if playcount > 0:
+            details["resume"] = {"position": 0, "total": 0}
+        jsonrpc("VideoLibrary.SetMovieDetails", details)
     elif media == "season":
         result = jsonrpc("VideoLibrary.GetEpisodes", {
             "tvshowid": int(params["tvshowid"][0]),
@@ -89,16 +95,20 @@ def action_set_watched(params):
             "properties": ["title"],
         })
         for ep in (result or {}).get("episodes", []):
-            jsonrpc("VideoLibrary.SetEpisodeDetails",
-                    {"episodeid": ep["episodeid"], "playcount": playcount})
+            details = {"episodeid": ep["episodeid"], "playcount": playcount}
+            if playcount > 0:
+                details["resume"] = {"position": 0, "total": 0}
+            jsonrpc("VideoLibrary.SetEpisodeDetails", details)
     elif media == "tvshow":
         result = jsonrpc("VideoLibrary.GetEpisodes", {
             "tvshowid": int(params["tvshowid"][0]),
             "properties": ["title"],
         })
         for ep in (result or {}).get("episodes", []):
-            jsonrpc("VideoLibrary.SetEpisodeDetails",
-                    {"episodeid": ep["episodeid"], "playcount": playcount})
+            details = {"episodeid": ep["episodeid"], "playcount": playcount}
+            if playcount > 0:
+                details["resume"] = {"position": 0, "total": 0}
+            jsonrpc("VideoLibrary.SetEpisodeDetails", details)
 
     xbmc.executebuiltin("Container.Refresh")
 
@@ -120,8 +130,12 @@ class PlaybackMonitor(xbmc.Monitor):
 
         if _current_episodeid is not None:
             try:
-                jsonrpc("VideoLibrary.SetEpisodeDetails",
-                        {"episodeid": _current_episodeid, "playcount": 1})
+                # Mark as watched and clear resume point
+                jsonrpc("VideoLibrary.SetEpisodeDetails", {
+                    "episodeid": _current_episodeid,
+                    "playcount": 1,
+                    "resume": {"position": 0, "total": 0}
+                })
                 xbmc.log("{}:Auto-marked episode {} as watched".format(ADDON_ID, _current_episodeid), xbmc.LOGINFO)
             except Exception as e:
                 xbmc.log("{}:Failed to mark episode as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
@@ -129,8 +143,12 @@ class PlaybackMonitor(xbmc.Monitor):
 
         if _current_movieid is not None:
             try:
-                jsonrpc("VideoLibrary.SetMovieDetails",
-                        {"movieid": _current_movieid, "playcount": 1})
+                # Mark as watched and clear resume point
+                jsonrpc("VideoLibrary.SetMovieDetails", {
+                    "movieid": _current_movieid,
+                    "playcount": 1,
+                    "resume": {"position": 0, "total": 0}
+                })
                 xbmc.log("{}:Auto-marked movie {} as watched".format(ADDON_ID, _current_movieid), xbmc.LOGINFO)
             except Exception as e:
                 xbmc.log("{}:Failed to mark movie as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
@@ -142,8 +160,36 @@ class PlaybackMonitor(xbmc.Monitor):
         """Called when playback is stopped."""
         global _current_episodeid, _current_movieid
 
-        # Save resume point before clearing
-        self._save_resume_point()
+        # Check if we're near the end (95%+) and mark as watched
+        if self.player.isPlaying() or (self.player.getTime() > 0):
+            try:
+                position = self.player.getTime()
+                duration = self.player.getTotalTime()
+                if duration > 0:
+                    watched_percent = (position / duration) * 100
+                    if watched_percent >= 95:
+                        # Mark as watched and clear resume point
+                        if _current_episodeid is not None:
+                            jsonrpc("VideoLibrary.SetEpisodeDetails", {
+                                "episodeid": _current_episodeid,
+                                "playcount": 1,
+                                "resume": {"position": 0, "total": 0}
+                            })
+                            xbmc.log("{}:Auto-marked episode {} as watched (stopped at {}%)".format(
+                                ADDON_ID, _current_episodeid, int(watched_percent)), xbmc.LOGINFO)
+                        elif _current_movieid is not None:
+                            jsonrpc("VideoLibrary.SetMovieDetails", {
+                                "movieid": _current_movieid,
+                                "playcount": 1,
+                                "resume": {"position": 0, "total": 0}
+                            })
+                            xbmc.log("{}:Auto-marked movie {} as watched (stopped at {}%)".format(
+                                ADDON_ID, _current_movieid, int(watched_percent)), xbmc.LOGINFO)
+                    else:
+                        # Save resume point for partial playback
+                        self._save_resume_point()
+            except Exception as e:
+                xbmc.log("{}:Error checking playback position on stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
         _current_episodeid = None
         _current_movieid = None
