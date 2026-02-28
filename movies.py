@@ -191,6 +191,7 @@ def list_movies(tag=None, collections_only=False):
 
 def play_movie(movieid, file):
     from main import HANDLE, jsonrpc
+    import main as main_module
 
     if not file:
         result = jsonrpc(
@@ -204,6 +205,13 @@ def play_movie(movieid, file):
         tag = li.getVideoInfoTag()
         tag.setMediaType("movie")
         tag.setDbId(movieid)
+
+        # Set up playback monitoring for auto-marking as watched
+        main_module._current_movieid = movieid
+        main_module._current_episodeid = None
+        if main_module._playback_monitor_instance is None:
+            main_module._playback_monitor_instance = main_module.PlaybackMonitor()
+
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())

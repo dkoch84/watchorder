@@ -700,6 +700,7 @@ def _add_linked_movies(tvshowid):
 
 def play_episode(episodeid, file):
     from main import HANDLE, jsonrpc
+    import main as main_module
 
     if not file:
         result = jsonrpc(
@@ -713,6 +714,13 @@ def play_episode(episodeid, file):
         tag = li.getVideoInfoTag()
         tag.setMediaType("episode")
         tag.setDbId(episodeid)
+
+        # Set up playback monitoring for auto-marking as watched
+        main_module._current_episodeid = episodeid
+        main_module._current_movieid = None
+        if main_module._playback_monitor_instance is None:
+            main_module._playback_monitor_instance = main_module.PlaybackMonitor()
+
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())

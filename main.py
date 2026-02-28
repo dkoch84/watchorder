@@ -13,6 +13,12 @@ ADDON_ID = ADDON.getAddonInfo("id")
 HANDLE = int(sys.argv[1])
 BASE_URL = sys.argv[0]
 
+# Track current playback for auto-marking as watched
+_playback_monitor_instance = None
+_current_episodeid = None
+_current_movieid = None
+_playback_monitor_thread = None
+
 CONFIG_DIR = xbmcvfs.translatePath(
     "special://userdata/addon_data/{}/".format(ADDON_ID)
 )
@@ -95,6 +101,103 @@ def action_set_watched(params):
                     {"episodeid": ep["episodeid"], "playcount": playcount})
 
     xbmc.executebuiltin("Container.Refresh")
+
+
+class PlaybackMonitor(xbmc.Monitor):
+    """Monitor playback to auto-mark episodes/movies as watched and save resume points."""
+
+    def __init__(self):
+        """Initialize the playback monitor."""
+        super().__init__()
+        self.player = xbmc.Player()
+        self.last_position_saved = 0
+        self.save_interval = 5  # Save resume point every 5 seconds
+        self._start_periodic_save()
+
+    def onPlayBackEnded(self):
+        """Called when playback ends."""
+        global _current_episodeid, _current_movieid
+
+        if _current_episodeid is not None:
+            try:
+                jsonrpc("VideoLibrary.SetEpisodeDetails",
+                        {"episodeid": _current_episodeid, "playcount": 1})
+                xbmc.log("{}:Auto-marked episode {} as watched".format(ADDON_ID, _current_episodeid), xbmc.LOGINFO)
+            except Exception as e:
+                xbmc.log("{}:Failed to mark episode as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
+            _current_episodeid = None
+
+        if _current_movieid is not None:
+            try:
+                jsonrpc("VideoLibrary.SetMovieDetails",
+                        {"movieid": _current_movieid, "playcount": 1})
+                xbmc.log("{}:Auto-marked movie {} as watched".format(ADDON_ID, _current_movieid), xbmc.LOGINFO)
+            except Exception as e:
+                xbmc.log("{}:Failed to mark movie as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
+            _current_movieid = None
+
+        self.last_position_saved = 0
+
+    def onPlayBackStopped(self):
+        """Called when playback is stopped."""
+        global _current_episodeid, _current_movieid
+
+        # Save resume point before clearing
+        self._save_resume_point()
+
+        _current_episodeid = None
+        _current_movieid = None
+        self.last_position_saved = 0
+
+    def onPlayBackPaused(self):
+        """Called when playback is paused."""
+        self._save_resume_point()
+
+    def _save_resume_point(self):
+        """Save the current playback position as resume point."""
+        global _current_episodeid, _current_movieid
+
+        if not self.player.isPlaying():
+            return
+
+        try:
+            position = self.player.getTime()
+            duration = self.player.getTotalTime()
+
+            # Only save if there's meaningful progress (more than 1% watched, but not nearly finished)
+            if duration > 0 and position > 10:
+                watched_percent = (position / duration) * 100
+                # Don't save if already 95%+ watched (treat as fully watched)
+                if watched_percent < 95:
+                    if _current_episodeid is not None:
+                        jsonrpc("VideoLibrary.SetEpisodeDetails", {
+                            "episodeid": _current_episodeid,
+                            "resume": {"position": position, "total": duration}
+                        })
+                    elif _current_movieid is not None:
+                        jsonrpc("VideoLibrary.SetMovieDetails", {
+                            "movieid": _current_movieid,
+                            "resume": {"position": position, "total": duration}
+                        })
+        except Exception as e:
+            xbmc.log("{}:Failed to save resume point: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
+
+    def _start_periodic_save(self):
+        """Start periodic saving of resume point during playback."""
+        import threading
+
+        def periodic_save():
+            while not self.abortRequested():
+                # Wait for the save interval or until abort is requested
+                if self.waitForAbort(self.save_interval):
+                    break
+                # Save resume point if currently playing
+                if self.player.isPlaying():
+                    self._save_resume_point()
+
+        # Start background thread for periodic saves
+        save_thread = threading.Thread(target=periodic_save, daemon=True)
+        save_thread.start()
 
 
 _forced_views_checked = False
