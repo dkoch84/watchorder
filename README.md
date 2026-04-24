@@ -15,6 +15,7 @@ A Kodi video plugin that replaces the standard library browser with a **collecti
 - **Select first unwatched** — respects Kodi's *"Select first unwatched TV show season/episode"* setting, auto-scrolling to your next unwatched season or episode.
 - **Include specials** — respects Kodi's *"Include All Seasons and Specials"* setting when determining the first unwatched item.
 - **Forced views** — on first run, sets skin forced views for seasons (Big Icons), episodes (Landscape), TV shows (PosterInfo), and movies (PosterInfo) if not already configured.
+- **Playback tracking** — saves resume points every 5 seconds during playback and auto-marks episodes and movies as watched when playback reaches the end, including when the user stops in the closing credits. Matches Kodi's own "near end" thresholds (last 3 minutes *or* last 8% of runtime).
 
 ## Installation
 
@@ -70,6 +71,40 @@ Right-click any item in the TV or movie listing and select *Collections Only* to
 ### Shared collections
 
 Enable *Shared collections* in addon settings to sync your collection configuration across multiple Kodi installs using the same MySQL server configured in `advancedsettings.xml`. Requires the `script.module.myconnpy` addon. Falls back to local JSON storage when unavailable.
+
+## Playback tracking
+
+The plugin runs a background `PlaybackMonitor` that keeps Kodi's library in sync with how you actually watched a video, so resume points and watched flags stay accurate whether playback ends naturally, is stopped in the credits, or is stopped mid-video.
+
+### What gets saved
+
+| Event | Action |
+|---|---|
+| Playback starts | Caches runtime so later callbacks stay correct even if Kodi has already torn down the player. |
+| Every 5 seconds during playback | Saves the current position as a resume point (unless playback is already in the "near end" zone — see below). |
+| Playback paused | Saves the current position as a resume point. |
+| Playback ends naturally (`onPlayBackEnded`) | Marks as watched, clears the resume point. |
+| Playback stopped (`onPlayBackStopped`) in the near-end zone | Marks as watched, clears the resume point. |
+| Playback stopped (`onPlayBackStopped`) before the near-end zone | Saves the current position as a resume point. |
+
+The manual *Set Watched* / *Set Unwatched* context menu entries also clear the resume point when marking as watched, so a subsequent play starts from the beginning.
+
+### Near-end threshold
+
+Playback is treated as "effectively complete" — i.e. marked as watched instead of saving a resume point — when **either** of these is true:
+
+- the remaining time is ≤ **3 minutes** (`COMPLETE_SECONDS_FROM_END = 180`), **or**
+- the remaining time is ≤ **8%** of the runtime (`COMPLETE_PERCENT_FROM_END = 0.08`).
+
+These defaults match Kodi's built-in `<ignoresecondsatend>` / `<ignorepercentatend>` values from `advancedsettings.xml`. The two thresholds are deliberately generous so that stopping anywhere in the closing credits counts as watched. Concretely, a 23-minute Simpsons episode (1381 s) is marked watched once the player is past ≈ 1201 s (the 3-minute rule kicks in first for anything shorter than ~37.5 minutes; the percentage rule dominates for longer runtimes).
+
+Both constants live on `PlaybackMonitor` in `main.py` and can be adjusted if you want different behaviour:
+
+```python
+class PlaybackMonitor(xbmc.Monitor):
+    COMPLETE_SECONDS_FROM_END = 180   # last 3 minutes count as watched
+    COMPLETE_PERCENT_FROM_END = 0.08  # or last 8% of runtime
+```
 
 ## Kodi settings respected
 

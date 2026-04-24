@@ -116,13 +116,45 @@ def action_set_watched(params):
 class PlaybackMonitor(xbmc.Monitor):
     """Monitor playback to auto-mark episodes/movies as watched and save resume points."""
 
+    # Treat playback as effectively complete (watched) if the remaining time is
+    # within either of these thresholds. Matches Kodi's own defaults for
+    # <ignoresecondsatend> / <ignorepercentatend> in advancedsettings.xml.
+    COMPLETE_SECONDS_FROM_END = 180  # last 3 minutes count as watched
+    COMPLETE_PERCENT_FROM_END = 0.08  # or last 8% of runtime
+
+    @classmethod
+    def _is_effectively_complete(cls, position, duration):
+        """Return True if `position` is close enough to `duration` to count as watched."""
+        if not duration or duration <= 0 or position <= 0:
+            return False
+        remaining = max(0, duration - position)
+        if remaining <= cls.COMPLETE_SECONDS_FROM_END:
+            return True
+        if remaining / duration <= cls.COMPLETE_PERCENT_FROM_END:
+            return True
+        return False
+
     def __init__(self):
         """Initialize the playback monitor."""
         super().__init__()
         self.player = xbmc.Player()
         self.last_position_saved = 0
+        # Cached from the periodic-save thread so onPlayBackStopped stays
+        # reliable even when player.getTime()/getTotalTime() return 0 after
+        # the player has already been stopped.
+        self.last_known_position = 0
+        self.last_known_duration = 0
         self.save_interval = 5  # Save resume point every 5 seconds
         self._start_periodic_save()
+
+    def onAVStarted(self):
+        """Called when audio/video playback starts. Prime the duration cache."""
+        try:
+            if self.player.isPlaying():
+                self.last_known_duration = self.player.getTotalTime()
+                self.last_known_position = self.player.getTime()
+        except Exception:
+            pass
 
     def onPlayBackEnded(self):
         """Called when playback ends."""
@@ -155,76 +187,111 @@ class PlaybackMonitor(xbmc.Monitor):
             _current_movieid = None
 
         self.last_position_saved = 0
+        self.last_known_position = 0
+        self.last_known_duration = 0
 
     def onPlayBackStopped(self):
         """Called when playback is stopped."""
         global _current_episodeid, _current_movieid
 
-        # Check if we're near the end (95%+) and mark as watched
-        if self.player.isPlaying() or (self.player.getTime() > 0):
-            try:
-                position = self.player.getTime()
-                duration = self.player.getTotalTime()
-                if duration > 0:
+        position = 0
+        duration = 0
+        try:
+            position = self.player.getTime()
+            duration = self.player.getTotalTime()
+        except Exception as e:
+            xbmc.log("{}:Error reading playback position on stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
+
+        # Fall back to the last-known values cached by the periodic save thread.
+        # On some Kodi builds, getTime()/getTotalTime() return 0 once the player
+        # has already stopped by the time this callback fires.
+        if not position or position <= 0:
+            position = self.last_known_position
+        if not duration or duration <= 0:
+            duration = self.last_known_duration
+
+        try:
+            if duration > 0 and position > 0:
+                if self._is_effectively_complete(position, duration):
                     watched_percent = (position / duration) * 100
-                    if watched_percent >= 95:
-                        # Mark as watched and clear resume point
-                        if _current_episodeid is not None:
-                            jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                                "episodeid": _current_episodeid,
-                                "playcount": 1,
-                                "resume": {"position": 0, "total": 0}
-                            })
-                            xbmc.log("{}:Auto-marked episode {} as watched (stopped at {}%)".format(
-                                ADDON_ID, _current_episodeid, int(watched_percent)), xbmc.LOGINFO)
-                        elif _current_movieid is not None:
-                            jsonrpc("VideoLibrary.SetMovieDetails", {
-                                "movieid": _current_movieid,
-                                "playcount": 1,
-                                "resume": {"position": 0, "total": 0}
-                            })
-                            xbmc.log("{}:Auto-marked movie {} as watched (stopped at {}%)".format(
-                                ADDON_ID, _current_movieid, int(watched_percent)), xbmc.LOGINFO)
-                    else:
-                        # Save resume point for partial playback
-                        self._save_resume_point()
-            except Exception as e:
-                xbmc.log("{}:Error checking playback position on stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
+                    # Mark as watched and clear resume point
+                    if _current_episodeid is not None:
+                        jsonrpc("VideoLibrary.SetEpisodeDetails", {
+                            "episodeid": _current_episodeid,
+                            "playcount": 1,
+                            "resume": {"position": 0, "total": 0}
+                        })
+                        xbmc.log("{}:Auto-marked episode {} as watched (stopped at {}%)".format(
+                            ADDON_ID, _current_episodeid, int(watched_percent)), xbmc.LOGINFO)
+                    elif _current_movieid is not None:
+                        jsonrpc("VideoLibrary.SetMovieDetails", {
+                            "movieid": _current_movieid,
+                            "playcount": 1,
+                            "resume": {"position": 0, "total": 0}
+                        })
+                        xbmc.log("{}:Auto-marked movie {} as watched (stopped at {}%)".format(
+                            ADDON_ID, _current_movieid, int(watched_percent)), xbmc.LOGINFO)
+                else:
+                    # Save resume point for partial playback
+                    self._save_resume_point_with(position, duration)
+        except Exception as e:
+            xbmc.log("{}:Error handling playback stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
         _current_episodeid = None
         _current_movieid = None
         self.last_position_saved = 0
+        self.last_known_position = 0
+        self.last_known_duration = 0
 
     def onPlayBackPaused(self):
         """Called when playback is paused."""
         self._save_resume_point()
 
     def _save_resume_point(self):
-        """Save the current playback position as resume point."""
-        global _current_episodeid, _current_movieid
-
+        """Capture the current playback position from the player and persist it."""
         if not self.player.isPlaying():
             return
 
         try:
             position = self.player.getTime()
             duration = self.player.getTotalTime()
+        except Exception as e:
+            xbmc.log("{}:Failed to read playback position: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
+            return
 
-            # Only save if there's meaningful progress (more than 1% watched, but not nearly finished)
-            if duration > 0 and position > 10:
-                watched_percent = (position / duration) * 100
-                # Don't save if already 95%+ watched (treat as fully watched)
-                if watched_percent < 95:
-                    if _current_episodeid is not None:
-                        jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                            "episodeid": _current_episodeid,
-                            "resume": {"position": position, "total": duration}
-                        })
-                    elif _current_movieid is not None:
-                        jsonrpc("VideoLibrary.SetMovieDetails", {
-                            "movieid": _current_movieid,
-                            "resume": {"position": position, "total": duration}
-                        })
+        # Cache the latest live values so onPlayBackStopped can fall back to
+        # them if the player has already gone away by the time it fires.
+        if duration and duration > 0:
+            self.last_known_duration = duration
+        if position and position > 0:
+            self.last_known_position = position
+
+        self._save_resume_point_with(position, duration)
+
+    def _save_resume_point_with(self, position, duration):
+        """Persist a resume point, unless playback is effectively complete."""
+        global _current_episodeid, _current_movieid
+
+        if not duration or duration <= 0 or not position or position <= 10:
+            # Not enough meaningful progress to persist.
+            return
+
+        # Treat near-the-end positions as watched elsewhere — never store a
+        # resume point that would pop back into the near-end zone.
+        if self._is_effectively_complete(position, duration):
+            return
+
+        try:
+            if _current_episodeid is not None:
+                jsonrpc("VideoLibrary.SetEpisodeDetails", {
+                    "episodeid": _current_episodeid,
+                    "resume": {"position": position, "total": duration}
+                })
+            elif _current_movieid is not None:
+                jsonrpc("VideoLibrary.SetMovieDetails", {
+                    "movieid": _current_movieid,
+                    "resume": {"position": position, "total": duration}
+                })
         except Exception as e:
             xbmc.log("{}:Failed to save resume point: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
