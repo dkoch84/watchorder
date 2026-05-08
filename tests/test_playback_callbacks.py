@@ -54,43 +54,41 @@ def test_on_av_started_swallows_player_errors(monitor, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_on_playback_ended_marks_episode_watched(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 77
+    monitor.current_episodeid = 77
     monitor.onPlayBackEnded()
 
     assert jsonrpc_calls == [(
         "VideoLibrary.SetEpisodeDetails",
         {"episodeid": 77, "playcount": 1, "resume": {"position": 0, "total": 0}},
     )]
-    assert main._current_episodeid is None
+    assert monitor.current_episodeid is None
 
 
 def test_on_playback_ended_marks_movie_watched(main, monitor, jsonrpc_calls):
-    main._current_movieid = 999
+    monitor.current_movieid = 999
     monitor.onPlayBackEnded()
 
     assert jsonrpc_calls == [(
         "VideoLibrary.SetMovieDetails",
         {"movieid": 999, "playcount": 1, "resume": {"position": 0, "total": 0}},
     )]
-    assert main._current_movieid is None
+    assert monitor.current_movieid is None
 
 
 def test_on_playback_ended_resets_cache_fields(monitor, main):
-    main._current_episodeid = None
-    main._current_movieid = None
+    monitor.current_episodeid = None
+    monitor.current_movieid = None
     monitor.last_known_position = 500
     monitor.last_known_duration = 1000
-    monitor.last_position_saved = 250
 
     monitor.onPlayBackEnded()
 
     assert monitor.last_known_position == 0
     assert monitor.last_known_duration == 0
-    assert monitor.last_position_saved == 0
 
 
 def test_on_playback_ended_swallows_jsonrpc_errors(main, monitor, monkeypatch):
-    main._current_episodeid = 42
+    monitor.current_episodeid = 42
 
     def boom(*_a, **_kw):
         raise RuntimeError("db down")
@@ -99,7 +97,7 @@ def test_on_playback_ended_swallows_jsonrpc_errors(main, monitor, monkeypatch):
     # Must not raise.
     monitor.onPlayBackEnded()
     # Even after a failure, the current-id must be cleared.
-    assert main._current_episodeid is None
+    assert monitor.current_episodeid is None
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +108,7 @@ def test_on_playback_ended_swallows_jsonrpc_errors(main, monitor, monkeypatch):
 def test_on_stopped_with_live_values_at_end_marks_watched(main, monitor, jsonrpc_calls):
     """User stops Simpsons 4x03 at 21:50 — should be marked watched."""
 
-    main._current_episodeid = 4003
+    monitor.current_episodeid = 4003
     _set_player(monitor, playing=True, position=1310, duration=1381)
 
     monitor.onPlayBackStopped()
@@ -119,11 +117,11 @@ def test_on_stopped_with_live_values_at_end_marks_watched(main, monitor, jsonrpc
         "VideoLibrary.SetEpisodeDetails",
         {"episodeid": 4003, "playcount": 1, "resume": {"position": 0, "total": 0}},
     )]
-    assert main._current_episodeid is None
+    assert monitor.current_episodeid is None
 
 
 def test_on_stopped_movie_at_end_marks_watched(main, monitor, jsonrpc_calls):
-    main._current_movieid = 555
+    monitor.current_movieid = 555
     # 2h movie stopped with 60s left.
     _set_player(monitor, playing=True, position=7140, duration=7200)
 
@@ -133,11 +131,11 @@ def test_on_stopped_movie_at_end_marks_watched(main, monitor, jsonrpc_calls):
         "VideoLibrary.SetMovieDetails",
         {"movieid": 555, "playcount": 1, "resume": {"position": 0, "total": 0}},
     )]
-    assert main._current_movieid is None
+    assert monitor.current_movieid is None
 
 
 def test_on_stopped_midway_saves_resume_point(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 101
+    monitor.current_episodeid = 101
     _set_player(monitor, playing=True, position=600, duration=1381)
 
     monitor.onPlayBackStopped()
@@ -147,7 +145,7 @@ def test_on_stopped_midway_saves_resume_point(main, monitor, jsonrpc_calls):
         {"episodeid": 101, "resume": {"position": 600, "total": 1381}},
     )]
     # Episode id should still be cleared after the stop.
-    assert main._current_episodeid is None
+    assert monitor.current_episodeid is None
 
 
 def test_on_stopped_uses_cached_values_when_player_returns_zero(
@@ -156,7 +154,7 @@ def test_on_stopped_uses_cached_values_when_player_returns_zero(
     """Some Kodi builds return 0 from ``getTime()`` once the player has
     already stopped.  The cached-value fallback must cover that case."""
 
-    main._current_episodeid = 4003
+    monitor.current_episodeid = 4003
     monitor.last_known_position = 1310
     monitor.last_known_duration = 1381
     _set_player(monitor, playing=False, position=0, duration=0)
@@ -170,7 +168,7 @@ def test_on_stopped_uses_cached_values_when_player_returns_zero(
 
 
 def test_on_stopped_with_no_values_at_all_is_noop(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 4003
+    monitor.current_episodeid = 4003
     # Neither live nor cached values — nothing to do.
     _set_player(monitor, playing=False, position=0, duration=0)
     monitor.last_known_position = 0
@@ -179,14 +177,14 @@ def test_on_stopped_with_no_values_at_all_is_noop(main, monitor, jsonrpc_calls):
     monitor.onPlayBackStopped()
 
     assert jsonrpc_calls == []
-    assert main._current_episodeid is None  # state still reset
+    assert monitor.current_episodeid is None  # state still reset
 
 
 def test_on_stopped_handles_player_getTime_exception(main, monitor, monkeypatch,
                                                      jsonrpc_calls):
     """If ``player.getTime()`` blows up, the cached values must still cover."""
 
-    main._current_movieid = 77
+    monitor.current_movieid = 77
     monitor.last_known_position = 7140
     monitor.last_known_duration = 7200
 
@@ -205,14 +203,13 @@ def test_on_stopped_handles_player_getTime_exception(main, monitor, monkeypatch,
 
 
 def test_on_stopped_resets_cache_fields(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 101
+    monitor.current_episodeid = 101
     _set_player(monitor, playing=True, position=1310, duration=1381)
 
     monitor.onPlayBackStopped()
 
     assert monitor.last_known_position == 0
     assert monitor.last_known_duration == 0
-    assert monitor.last_position_saved == 0
 
 
 def test_on_stopped_with_no_current_id_does_not_call_jsonrpc(
@@ -222,8 +219,8 @@ def test_on_stopped_with_no_current_id_does_not_call_jsonrpc(
     as watched — even if a previous cached position looks like it's near the
     end."""
 
-    main._current_episodeid = None
-    main._current_movieid = None
+    monitor.current_episodeid = None
+    monitor.current_movieid = None
     _set_player(monitor, playing=True, position=1310, duration=1381)
 
     monitor.onPlayBackStopped()
@@ -236,7 +233,7 @@ def test_on_stopped_with_no_current_id_does_not_call_jsonrpc(
 # ---------------------------------------------------------------------------
 
 def test_save_resume_point_midway(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 55
+    monitor.current_episodeid = 55
     _set_player(monitor, playing=True, position=400, duration=1381)
 
     monitor._save_resume_point()
@@ -255,7 +252,7 @@ def test_save_resume_point_near_end_does_not_persist(main, monitor, jsonrpc_call
     Kodi would then resume back into on the next play — instead of marking
     the episode watched.  With the new predicate the save is suppressed."""
 
-    main._current_episodeid = 4003
+    monitor.current_episodeid = 4003
     _set_player(monitor, playing=True, position=1310, duration=1381)
 
     monitor._save_resume_point()
@@ -268,14 +265,14 @@ def test_save_resume_point_near_end_does_not_persist(main, monitor, jsonrpc_call
 
 
 def test_save_resume_point_when_not_playing_is_noop(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 55
+    monitor.current_episodeid = 55
     _set_player(monitor, playing=False, position=400, duration=1381)
     monitor._save_resume_point()
     assert jsonrpc_calls == []
 
 
 def test_save_resume_point_with_trivial_position_is_noop(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 55
+    monitor.current_episodeid = 55
     # ``position <= 10`` is treated as "the user just started it"; no save.
     monitor._save_resume_point_with(position=5, duration=1381)
     monitor._save_resume_point_with(position=0, duration=1381)
@@ -284,7 +281,7 @@ def test_save_resume_point_with_trivial_position_is_noop(main, monitor, jsonrpc_
 
 
 def test_save_resume_point_with_for_movie(main, monitor, jsonrpc_calls):
-    main._current_movieid = 7
+    monitor.current_movieid = 7
     monitor._save_resume_point_with(position=1500, duration=6000)
     assert jsonrpc_calls == [(
         "VideoLibrary.SetMovieDetails",
@@ -293,14 +290,14 @@ def test_save_resume_point_with_for_movie(main, monitor, jsonrpc_calls):
 
 
 def test_save_resume_point_with_when_no_tracked_id(main, monitor, jsonrpc_calls):
-    main._current_episodeid = None
-    main._current_movieid = None
+    monitor.current_episodeid = None
+    monitor.current_movieid = None
     monitor._save_resume_point_with(position=400, duration=1381)
     assert jsonrpc_calls == []
 
 
 def test_save_resume_point_swallows_jsonrpc_errors(main, monitor, monkeypatch):
-    main._current_episodeid = 55
+    monitor.current_episodeid = 55
 
     def boom(*_a, **_kw):
         raise RuntimeError("network down")
@@ -311,7 +308,7 @@ def test_save_resume_point_swallows_jsonrpc_errors(main, monitor, monkeypatch):
 
 
 def test_on_paused_saves_resume_point(main, monitor, jsonrpc_calls):
-    main._current_episodeid = 55
+    monitor.current_episodeid = 55
     _set_player(monitor, playing=True, position=400, duration=1381)
     monitor.onPlayBackPaused()
     assert jsonrpc_calls == [(
@@ -329,7 +326,8 @@ def test_full_playback_lifecycle_end_to_end(main, monitor, jsonrpc_calls):
     ``onPlayBackEnded``.  The episode must wind up watched and the globals
     must be reset."""
 
-    main._current_episodeid = 4003
+    import xbmc
+    monitor.player._info_tag = xbmc.VideoInfoTag(media_type="episode", db_id=4003)
     _set_player(monitor, playing=True, position=0, duration=1381)
     monitor.onAVStarted()
 
@@ -349,7 +347,7 @@ def test_full_playback_lifecycle_end_to_end(main, monitor, jsonrpc_calls):
         "VideoLibrary.SetEpisodeDetails",
         {"episodeid": 4003, "playcount": 1, "resume": {"position": 0, "total": 0}},
     )
-    assert main._current_episodeid is None
+    assert monitor.current_episodeid is None
 
 
 def test_stopped_near_end_after_cache_primed_by_periodic_save(
@@ -359,7 +357,7 @@ def test_stopped_near_end_after_cache_primed_by_periodic_save(
     save and the ``onPlayBackStopped`` callback.  The cache primed during
     the save must keep the watched-mark path reliable."""
 
-    main._current_episodeid = 4003
+    monitor.current_episodeid = 4003
 
     # Periodic tick a few seconds before the user hits Stop.
     _set_player(monitor, playing=True, position=1310, duration=1381)
@@ -388,7 +386,7 @@ def test_stopped_near_end_after_cache_primed_by_periodic_save(
 )
 def test_stopped_matrix(main, monitor, jsonrpc_calls, position, duration,
                         expect_watched):
-    main._current_episodeid = 1
+    monitor.current_episodeid = 1
     _set_player(monitor, playing=True, position=position, duration=duration)
     monitor.onPlayBackStopped()
 

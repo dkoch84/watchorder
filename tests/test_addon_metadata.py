@@ -23,4 +23,15 @@ def test_addon_id_is_stable():
 
 
 def test_addon_version_bumped_for_task_255():
-    assert _parse_addon().get("version") == "0.8.8"
+    assert _parse_addon().get("version") == "0.9.0"
+
+
+def test_service_extension_registered():
+    """The PlaybackMonitor only fires if Kodi keeps a service process alive."""
+    root = _parse_addon()
+    services = [
+        e for e in root.findall("extension")
+        if e.get("point") == "xbmc.service"
+    ]
+    assert len(services) == 1
+    assert services[0].get("library") == "service.py"

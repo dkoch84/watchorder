@@ -55,11 +55,23 @@ def _install_kodi_fakes() -> None:
             # requested while waiting.
             return True
 
+    class _VideoInfoTag:
+        def __init__(self, media_type="", db_id=0):
+            self._media_type = media_type
+            self._db_id = db_id
+
+        def getMediaType(self):
+            return self._media_type
+
+        def getDbId(self):
+            return self._db_id
+
     class _Player:
         def __init__(self):  # pragma: no cover - trivial
             self._playing = False
             self._time = 0
             self._total = 0
+            self._info_tag = _VideoInfoTag()
 
         def isPlaying(self):  # pragma: no cover - trivial
             return self._playing
@@ -69,6 +81,11 @@ def _install_kodi_fakes() -> None:
 
         def getTotalTime(self):  # pragma: no cover - trivial
             return self._total
+
+        def getVideoInfoTag(self):  # pragma: no cover - trivial
+            return self._info_tag
+
+    xbmc.VideoInfoTag = _VideoInfoTag
 
     xbmc.Monitor = _Monitor
     xbmc.Player = _Player
@@ -129,11 +146,6 @@ def main():
     """
 
     importlib.reload(main_module)
-    # Reset globals the production code mutates.
-    main_module._current_episodeid = None
-    main_module._current_movieid = None
-    main_module._playback_monitor_instance = None
-    main_module._playback_monitor_thread = None
     return main_module
 
 

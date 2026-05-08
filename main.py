@@ -10,14 +10,10 @@ import xbmcvfs
 
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo("id")
-HANDLE = int(sys.argv[1])
-BASE_URL = sys.argv[0]
-
-# Track current playback for auto-marking as watched
-_playback_monitor_instance = None
-_current_episodeid = None
-_current_movieid = None
-_playback_monitor_thread = None
+# When this module is imported by the background service (service.py), there
+# is no plugin handle in sys.argv — only the plugin process gets one.
+HANDLE = int(sys.argv[1]) if len(sys.argv) > 1 else -1
+BASE_URL = sys.argv[0] if sys.argv else ""
 
 CONFIG_DIR = xbmcvfs.translatePath(
     "special://userdata/addon_data/{}/".format(ADDON_ID)
@@ -113,8 +109,13 @@ def action_set_watched(params):
     xbmc.executebuiltin("Container.Refresh")
 
 
-class PlaybackMonitor(xbmc.Monitor):
-    """Monitor playback to auto-mark episodes/movies as watched and save resume points."""
+class PlaybackMonitor(xbmc.Player):
+    """Subclass of xbmc.Player so Kodi delivers onAVStarted / onPlayBack* callbacks to us.
+
+    Auto-marks episodes/movies as watched and saves resume points. The class
+    used to inherit ``xbmc.Monitor`` — those callbacks never fired because
+    Kodi only routes playback events to ``xbmc.Player`` subclasses.
+    """
 
     # Treat playback as effectively complete (watched) if the remaining time is
     # within either of these thresholds. Matches Kodi's own defaults for
@@ -137,63 +138,117 @@ class PlaybackMonitor(xbmc.Monitor):
     def __init__(self):
         """Initialize the playback monitor."""
         super().__init__()
-        self.player = xbmc.Player()
-        self.last_position_saved = 0
+        # xbmc.Player has no abort lifecycle; we keep a separate xbmc.Monitor
+        # to drive the periodic-save thread's exit condition.
+        self._abort = xbmc.Monitor()
+        # Back-compat alias so ``self.player.foo`` still works for any tests
+        # or callers that haven't been updated.
+        self.player = self
+        self.current_episodeid = None
+        self.current_movieid = None
         # Cached from the periodic-save thread so onPlayBackStopped stays
-        # reliable even when player.getTime()/getTotalTime() return 0 after
-        # the player has already been stopped.
+        # reliable even when getTime()/getTotalTime() return 0 after the
+        # player has already been stopped.
         self.last_known_position = 0
         self.last_known_duration = 0
         self.save_interval = 5  # Save resume point every 5 seconds
         self._start_periodic_save()
 
+    def _capture_current_item(self):
+        """Identify the playing item by parsing the plugin URL.
+
+        ``getVideoInfoTag()`` is unreliable for plugin-resolved playback —
+        Kodi often hands back an empty tag because the resolved URL is the
+        underlying file, not a library item. The plugin URL we built in
+        ``play_episode`` / ``play_movie`` carries ``episodeid`` / ``movieid``
+        in the query string, so we parse that directly. Falls back to the
+        VideoInfoTag for library-initiated playback.
+        """
+        self.current_episodeid = None
+        self.current_movieid = None
+
+        playing_url = ""
+        try:
+            if not self.player.isPlaying():
+                return
+            playing_url = self.player.getPlayingFile() or ""
+        except Exception:
+            playing_url = ""
+
+        if playing_url.startswith("plugin://{}/".format(ADDON_ID)):
+            try:
+                from urllib.parse import urlparse, parse_qs
+                params = parse_qs(urlparse(playing_url).query)
+                if "episodeid" in params:
+                    self.current_episodeid = int(params["episodeid"][0])
+                    return
+                if "movieid" in params:
+                    self.current_movieid = int(params["movieid"][0])
+                    return
+            except Exception as e:
+                xbmc.log("{}: Failed to parse plugin URL '{}': {}".format(
+                    ADDON_ID, playing_url, e), xbmc.LOGWARNING)
+
+        # Fallback: library-initiated playback exposes a real VideoInfoTag.
+        try:
+            tag = self.player.getVideoInfoTag()
+            media_type = tag.getMediaType()
+            db_id = tag.getDbId()
+        except Exception:
+            return
+        if not db_id or db_id <= 0:
+            return
+        if media_type == "episode":
+            self.current_episodeid = db_id
+        elif media_type == "movie":
+            self.current_movieid = db_id
+
+    def _clear_state(self):
+        self.current_episodeid = None
+        self.current_movieid = None
+        self.last_known_position = 0
+        self.last_known_duration = 0
+
     def onAVStarted(self):
-        """Called when audio/video playback starts. Prime the duration cache."""
+        """Called when audio/video playback starts. Prime the cache."""
+        self._capture_current_item()
         try:
             if self.player.isPlaying():
                 self.last_known_duration = self.player.getTotalTime()
                 self.last_known_position = self.player.getTime()
         except Exception:
             pass
+        xbmc.log("{}: onAVStarted episodeid={} movieid={} duration={}".format(
+            ADDON_ID, self.current_episodeid, self.current_movieid,
+            self.last_known_duration), xbmc.LOGINFO)
 
     def onPlayBackEnded(self):
         """Called when playback ends."""
-        global _current_episodeid, _current_movieid
-
-        if _current_episodeid is not None:
+        if self.current_episodeid is not None:
             try:
-                # Mark as watched and clear resume point
                 jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                    "episodeid": _current_episodeid,
+                    "episodeid": self.current_episodeid,
                     "playcount": 1,
                     "resume": {"position": 0, "total": 0}
                 })
-                xbmc.log("{}:Auto-marked episode {} as watched".format(ADDON_ID, _current_episodeid), xbmc.LOGINFO)
+                xbmc.log("{}:Auto-marked episode {} as watched".format(ADDON_ID, self.current_episodeid), xbmc.LOGINFO)
             except Exception as e:
                 xbmc.log("{}:Failed to mark episode as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
-            _current_episodeid = None
-
-        if _current_movieid is not None:
+        elif self.current_movieid is not None:
             try:
-                # Mark as watched and clear resume point
                 jsonrpc("VideoLibrary.SetMovieDetails", {
-                    "movieid": _current_movieid,
+                    "movieid": self.current_movieid,
                     "playcount": 1,
                     "resume": {"position": 0, "total": 0}
                 })
-                xbmc.log("{}:Auto-marked movie {} as watched".format(ADDON_ID, _current_movieid), xbmc.LOGINFO)
+                xbmc.log("{}:Auto-marked movie {} as watched".format(ADDON_ID, self.current_movieid), xbmc.LOGINFO)
             except Exception as e:
                 xbmc.log("{}:Failed to mark movie as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
-            _current_movieid = None
 
-        self.last_position_saved = 0
-        self.last_known_position = 0
-        self.last_known_duration = 0
+        self._clear_state()
 
     def onPlayBackStopped(self):
         """Called when playback is stopped."""
-        global _current_episodeid, _current_movieid
-
         position = 0
         duration = 0
         try:
@@ -214,34 +269,28 @@ class PlaybackMonitor(xbmc.Monitor):
             if duration > 0 and position > 0:
                 if self._is_effectively_complete(position, duration):
                     watched_percent = (position / duration) * 100
-                    # Mark as watched and clear resume point
-                    if _current_episodeid is not None:
+                    if self.current_episodeid is not None:
                         jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                            "episodeid": _current_episodeid,
+                            "episodeid": self.current_episodeid,
                             "playcount": 1,
                             "resume": {"position": 0, "total": 0}
                         })
                         xbmc.log("{}:Auto-marked episode {} as watched (stopped at {}%)".format(
-                            ADDON_ID, _current_episodeid, int(watched_percent)), xbmc.LOGINFO)
-                    elif _current_movieid is not None:
+                            ADDON_ID, self.current_episodeid, int(watched_percent)), xbmc.LOGINFO)
+                    elif self.current_movieid is not None:
                         jsonrpc("VideoLibrary.SetMovieDetails", {
-                            "movieid": _current_movieid,
+                            "movieid": self.current_movieid,
                             "playcount": 1,
                             "resume": {"position": 0, "total": 0}
                         })
                         xbmc.log("{}:Auto-marked movie {} as watched (stopped at {}%)".format(
-                            ADDON_ID, _current_movieid, int(watched_percent)), xbmc.LOGINFO)
+                            ADDON_ID, self.current_movieid, int(watched_percent)), xbmc.LOGINFO)
                 else:
-                    # Save resume point for partial playback
                     self._save_resume_point_with(position, duration)
         except Exception as e:
             xbmc.log("{}:Error handling playback stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
-        _current_episodeid = None
-        _current_movieid = None
-        self.last_position_saved = 0
-        self.last_known_position = 0
-        self.last_known_duration = 0
+        self._clear_state()
 
     def onPlayBackPaused(self):
         """Called when playback is paused."""
@@ -266,14 +315,16 @@ class PlaybackMonitor(xbmc.Monitor):
         if position and position > 0:
             self.last_known_position = position
 
+        # If onAVStarted hasn't run yet (or fired before metadata was ready),
+        # try once more here so the periodic ticks can recover the db id.
+        if self.current_episodeid is None and self.current_movieid is None:
+            self._capture_current_item()
+
         self._save_resume_point_with(position, duration)
 
     def _save_resume_point_with(self, position, duration):
         """Persist a resume point, unless playback is effectively complete."""
-        global _current_episodeid, _current_movieid
-
         if not duration or duration <= 0 or not position or position <= 10:
-            # Not enough meaningful progress to persist.
             return
 
         # Treat near-the-end positions as watched elsewhere — never store a
@@ -282,14 +333,14 @@ class PlaybackMonitor(xbmc.Monitor):
             return
 
         try:
-            if _current_episodeid is not None:
+            if self.current_episodeid is not None:
                 jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                    "episodeid": _current_episodeid,
+                    "episodeid": self.current_episodeid,
                     "resume": {"position": position, "total": duration}
                 })
-            elif _current_movieid is not None:
+            elif self.current_movieid is not None:
                 jsonrpc("VideoLibrary.SetMovieDetails", {
-                    "movieid": _current_movieid,
+                    "movieid": self.current_movieid,
                     "resume": {"position": position, "total": duration}
                 })
         except Exception as e:
@@ -300,15 +351,12 @@ class PlaybackMonitor(xbmc.Monitor):
         import threading
 
         def periodic_save():
-            while not self.abortRequested():
-                # Wait for the save interval or until abort is requested
-                if self.waitForAbort(self.save_interval):
+            while not self._abort.abortRequested():
+                if self._abort.waitForAbort(self.save_interval):
                     break
-                # Save resume point if currently playing
-                if self.player.isPlaying():
+                if self.isPlaying():
                     self._save_resume_point()
 
-        # Start background thread for periodic saves
         save_thread = threading.Thread(target=periodic_save, daemon=True)
         save_thread.start()
 
