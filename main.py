@@ -152,6 +152,12 @@ class PlaybackMonitor(xbmc.Player):
         self.last_known_position = 0
         self.last_known_duration = 0
         self.save_interval = 5  # Save resume point every 5 seconds
+        # Session-level IDs survive _clear_state() so that onPlayBackEnded can
+        # still mark the episode/movie watched even when onPlayBackStopped fires
+        # first (as it does in Kodi 19+ on natural completion) and already
+        # nulled current_episodeid/current_movieid via _clear_state().
+        self._session_episodeid = None
+        self._session_movieid = None
         self._start_periodic_save()
 
     def _capture_current_item(self):
@@ -181,9 +187,11 @@ class PlaybackMonitor(xbmc.Player):
                 params = parse_qs(urlparse(playing_url).query)
                 if "episodeid" in params:
                     self.current_episodeid = int(params["episodeid"][0])
+                    self._session_episodeid = self.current_episodeid
                     return
                 if "movieid" in params:
                     self.current_movieid = int(params["movieid"][0])
+                    self._session_movieid = self.current_movieid
                     return
             except Exception as e:
                 xbmc.log("{}: Failed to parse plugin URL '{}': {}".format(
@@ -200,17 +208,31 @@ class PlaybackMonitor(xbmc.Player):
             return
         if media_type == "episode":
             self.current_episodeid = db_id
+            self._session_episodeid = db_id
         elif media_type == "movie":
             self.current_movieid = db_id
+            self._session_movieid = db_id
 
     def _clear_state(self):
         self.current_episodeid = None
         self.current_movieid = None
         self.last_known_position = 0
         self.last_known_duration = 0
+        # _session_episodeid / _session_movieid are intentionally NOT cleared
+        # here — they persist until the next onAVStarted so that onPlayBackEnded
+        # can still mark the item watched even when onPlayBackStopped fired first.
+
+    def _clear_session(self):
+        """Reset per-playback session IDs.  Call from onAVStarted and after
+        onPlayBackEnded has used the IDs to mark the item watched."""
+        self._session_episodeid = None
+        self._session_movieid = None
 
     def onAVStarted(self):
         """Called when audio/video playback starts. Prime the cache."""
+        # New content is starting — discard any leftover session IDs from the
+        # previous item so they cannot bleed into this playback.
+        self._clear_session()
         self._capture_current_item()
         try:
             if self.player.isPlaying():
@@ -223,29 +245,49 @@ class PlaybackMonitor(xbmc.Player):
             self.last_known_duration), xbmc.LOGINFO)
 
     def onPlayBackEnded(self):
-        """Called when playback ends."""
-        if self.current_episodeid is not None:
+        """Called when playback ends naturally.
+
+        In Kodi 19+ this fires *before* ``onPlayBackStopped`` on natural
+        completion.  In some builds the order is reversed; we therefore use
+        ``_session_episodeid`` / ``_session_movieid`` as a fallback so we can
+        mark the item watched even when ``onPlayBackStopped`` already ran and
+        cleared ``current_episodeid`` / ``current_movieid`` via
+        ``_clear_state()``.
+        """
+        episodeid = (self.current_episodeid
+                     if self.current_episodeid is not None
+                     else self._session_episodeid)
+        movieid = (self.current_movieid
+                   if self.current_movieid is not None
+                   else self._session_movieid)
+
+        if episodeid is not None:
             try:
                 jsonrpc("VideoLibrary.SetEpisodeDetails", {
-                    "episodeid": self.current_episodeid,
+                    "episodeid": episodeid,
                     "playcount": 1,
                     "resume": {"position": 0, "total": 0}
                 })
-                xbmc.log("{}:Auto-marked episode {} as watched".format(ADDON_ID, self.current_episodeid), xbmc.LOGINFO)
+                xbmc.log("{}:Auto-marked episode {} as watched".format(
+                    ADDON_ID, episodeid), xbmc.LOGINFO)
             except Exception as e:
-                xbmc.log("{}:Failed to mark episode as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
-        elif self.current_movieid is not None:
+                xbmc.log("{}:Failed to mark episode as watched: {}".format(
+                    ADDON_ID, e), xbmc.LOGERROR)
+        elif movieid is not None:
             try:
                 jsonrpc("VideoLibrary.SetMovieDetails", {
-                    "movieid": self.current_movieid,
+                    "movieid": movieid,
                     "playcount": 1,
                     "resume": {"position": 0, "total": 0}
                 })
-                xbmc.log("{}:Auto-marked movie {} as watched".format(ADDON_ID, self.current_movieid), xbmc.LOGINFO)
+                xbmc.log("{}:Auto-marked movie {} as watched".format(
+                    ADDON_ID, movieid), xbmc.LOGINFO)
             except Exception as e:
-                xbmc.log("{}:Failed to mark movie as watched: {}".format(ADDON_ID, e), xbmc.LOGERROR)
+                xbmc.log("{}:Failed to mark movie as watched: {}".format(
+                    ADDON_ID, e), xbmc.LOGERROR)
 
         self._clear_state()
+        self._clear_session()
 
     def onPlayBackStopped(self):
         """Called when playback is stopped."""
@@ -257,11 +299,26 @@ class PlaybackMonitor(xbmc.Player):
         except Exception as e:
             xbmc.log("{}:Error reading playback position on stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
-        # Fall back to the last-known values cached by the periodic save thread.
-        # On some Kodi builds, getTime()/getTotalTime() return 0 once the player
-        # has already stopped by the time this callback fires.
-        if not position or position <= 0:
+        # Resolve the best available position.
+        #
+        # On some Kodi builds getTime()/getTotalTime() return 0 once the player
+        # has already stopped — fall back to the cache primed by the periodic-
+        # save thread.
+        #
+        # On other builds (including some that fire onPlayBackStopped BEFORE
+        # onPlayBackEnded on natural completion) getTime() returns a stale value
+        # frozen at the last player-internal tick — which may be the position
+        # from the periodic-save just *before* the near-end zone (e.g. 1200s
+        # on a 23-minute / 1381s episode where 181s > COMPLETE_SECONDS_FROM_END
+        # of 180s).  The periodic-save cache is updated every save_interval
+        # seconds and reflects the true play position more faithfully, so we
+        # take the *maximum* of the two: if the cache is further ahead than
+        # the player's reported value, the cache wins.
+        if position <= 0:
             position = self.last_known_position
+        elif self.last_known_position > position:
+            position = self.last_known_position
+
         if not duration or duration <= 0:
             duration = self.last_known_duration
 
