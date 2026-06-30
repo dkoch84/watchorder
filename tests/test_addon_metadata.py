@@ -23,7 +23,7 @@ def test_addon_id_is_stable():
 
 
 def test_addon_version_bumped_for_task_255():
-    assert _parse_addon().get("version") == "0.9.4"
+    assert _parse_addon().get("version") == "0.9.5"
 
 
 def test_service_extension_registered():

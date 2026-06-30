@@ -250,19 +250,44 @@ class PlaybackMonitor(xbmc.Player):
         self._session_movieid = None
 
     def _refresh_watchorder_container(self):
-        """Rebuild the watchorder listing the user is sitting in, if any.
+        """Schedule a refresh of the watchorder listing once the player closes.
 
-        Kodi caches a plugin's directory contents, so the watched overlay and
-        resume bar are baked into the list items when the directory is first
-        built (i.e. when the user pressed play).  When this service marks the
-        item watched and clears its resume point in the DB, the cached list
-        keeps rendering the *old* resume bar — and the resume-on-play dialog
-        reads that stale list item — until the user manually navigates away and
-        back.  A Container.Refresh re-reads the now-correct DB state for them.
+        Kodi bakes the watched overlay and resume bar into the list items when
+        the directory is first built (i.e. when the user pressed play).  When
+        this service marks the item watched and clears its resume point in the
+        DB, the open list keeps rendering the *old* resume bar — and the
+        resume-on-play dialog reads that stale list item — until the user
+        navigates away and back.
 
-        Guarded on the active folder path so we only refresh when a watchorder
-        listing is actually on screen; refreshing an unrelated window would be
-        disruptive and pointless.
+        Refreshing from the player callback itself is too early: fullscreen
+        video is still up, so Container.Refresh is a no-op and Kodi then
+        redisplays the stale list once the video tears down.  We therefore wait
+        (off the callback thread) for the player window to close, then refresh.
+        """
+        import threading
+        threading.Thread(target=self._deferred_refresh, daemon=True).start()
+
+    def _deferred_refresh(self):
+        """Wait for fullscreen video to close, then refresh the listing."""
+        monitor = xbmc.Monitor()
+        closed = False
+        for _ in range(30):  # poll up to ~3s
+            if monitor.waitForAbort(0.1):
+                return
+            if not xbmc.getCondVisibility("Window.IsVisible(fullscreenvideo)"):
+                closed = True
+                break
+        if not closed:
+            # Still in the player — e.g. the user went straight into the next
+            # episode.  They aren't looking at the list, so don't refresh.
+            return
+        self._refresh_now()
+
+    def _refresh_now(self):
+        """Refresh the active container iff it is a watchorder listing.
+
+        Guarded on the folder path so we only refresh when a watchorder listing
+        is on screen; refreshing an unrelated window would be disruptive.
         """
         try:
             folder = xbmc.getInfoLabel("Container.FolderPath") or ""

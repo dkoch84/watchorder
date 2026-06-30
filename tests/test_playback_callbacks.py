@@ -709,55 +709,73 @@ def test_ended_prefers_current_id_over_session_id(main, monitor, jsonrpc_calls):
 # manual "back out and go back in" does.
 
 
-def test_ended_refreshes_when_watchorder_listing_on_screen(
-    main, monitor, jsonrpc_calls, monkeypatch
-):
-    import xbmc
-    monkeypatch.setattr(
-        xbmc, "getInfoLabel",
-        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
-    )
-    xbmc.executebuiltin.reset_mock()
-
-    monitor.current_episodeid = 4003
-    monitor.onPlayBackEnded()
-
-    xbmc.executebuiltin.assert_any_call("Container.Refresh")
-
-
-def test_stopped_refreshes_when_watchorder_listing_on_screen(
-    main, monitor, jsonrpc_calls, monkeypatch
-):
-    import xbmc
-    monkeypatch.setattr(
-        xbmc, "getInfoLabel",
-        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
-    )
-    xbmc.executebuiltin.reset_mock()
-
-    monitor.current_episodeid = 4003
-    _set_player(monitor, playing=False, position=1376, duration=1381)
-    monitor.onPlayBackStopped()
-
-    xbmc.executebuiltin.assert_any_call("Container.Refresh")
-
-
-def test_no_refresh_when_other_window_on_screen(
-    main, monitor, jsonrpc_calls, monkeypatch
-):
-    """Don't disrupt an unrelated window — only refresh watchorder listings."""
-    import xbmc
-    monkeypatch.setattr(
-        xbmc, "getInfoLabel",
-        lambda _label: "videodb://tvshows/titles/",
-    )
-    xbmc.executebuiltin.reset_mock()
-
-    monitor.current_episodeid = 4003
-    monitor.onPlayBackEnded()
-
-    refresh_calls = [
+def _refresh_calls(xbmc):
+    return [
         c for c in xbmc.executebuiltin.call_args_list
         if c.args and c.args[0] == "Container.Refresh"
     ]
-    assert refresh_calls == []
+
+
+class _SeqMonitor:
+    """Monitor whose waitForAbort never aborts, so the poll loop runs."""
+
+    def waitForAbort(self, _seconds):
+        return False
+
+
+def test_refresh_now_refreshes_watchorder_listing(main, monitor, monkeypatch):
+    import xbmc
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor._refresh_now()
+
+    xbmc.executebuiltin.assert_any_call("Container.Refresh")
+
+
+def test_refresh_now_skips_other_window(main, monitor, monkeypatch):
+    """Don't disrupt an unrelated window — only refresh watchorder listings."""
+    import xbmc
+    monkeypatch.setattr(xbmc, "getInfoLabel", lambda _label: "videodb://tvshows/titles/")
+    xbmc.executebuiltin.reset_mock()
+
+    monitor._refresh_now()
+
+    assert _refresh_calls(xbmc) == []
+
+
+def test_deferred_refresh_waits_for_video_then_refreshes(main, monitor, monkeypatch):
+    """Fullscreen video visible for a couple of polls, then closes → refresh."""
+    import xbmc
+    monkeypatch.setattr(xbmc, "Monitor", _SeqMonitor)
+    visibility = iter([True, True, False])
+    monkeypatch.setattr(xbmc, "getCondVisibility", lambda _c: next(visibility, False))
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor._deferred_refresh()
+
+    xbmc.executebuiltin.assert_any_call("Container.Refresh")
+
+
+def test_deferred_refresh_skips_when_video_stays_open(main, monitor, monkeypatch):
+    """User went straight into the next episode — video never closes, so the
+    list isn't on screen and must not be refreshed."""
+    import xbmc
+    monkeypatch.setattr(xbmc, "Monitor", _SeqMonitor)
+    monkeypatch.setattr(xbmc, "getCondVisibility", lambda _c: True)  # always in video
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor._deferred_refresh()
+
+    assert _refresh_calls(xbmc) == []

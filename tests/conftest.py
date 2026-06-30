@@ -41,6 +41,7 @@ def _install_kodi_fakes() -> None:
     xbmc.executebuiltin = MagicMock()
     xbmc.executeJSONRPC = MagicMock(return_value='{"result": {}}')
     xbmc.getInfoLabel = MagicMock(return_value="")
+    xbmc.getCondVisibility = MagicMock(return_value=False)
 
     class _Monitor:
         def __init__(self):  # pragma: no cover - trivial
