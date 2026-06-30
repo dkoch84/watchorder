@@ -572,6 +572,12 @@ def list_episodes(tvshowid, season):
         params["season"] = season
     result = jsonrpc("VideoLibrary.GetEpisodes", params)
     episodes = result.get("episodes", []) if result else []
+    # Order by season/episode rather than trusting the DB's default order.
+    # GetEpisodes returns rows in episodeid order, which normally matches
+    # episode order — but a rescraped episode gets a fresh (high) episodeid and
+    # would otherwise sort to the end of the season.  Sort explicitly so an
+    # episode always lands in its numbered position.  See task #503.
+    episodes.sort(key=lambda e: (e.get("season") or 0, e.get("episode") or 0))
     if not episodes:
         xbmcgui.Dialog().notification(
             "TV Collections", "No episodes found", xbmcgui.NOTIFICATION_INFO
