@@ -228,6 +228,31 @@ class PlaybackMonitor(xbmc.Player):
         self._session_episodeid = None
         self._session_movieid = None
 
+    def _refresh_watchorder_container(self):
+        """Rebuild the watchorder listing the user is sitting in, if any.
+
+        Kodi caches a plugin's directory contents, so the watched overlay and
+        resume bar are baked into the list items when the directory is first
+        built (i.e. when the user pressed play).  When this service marks the
+        item watched and clears its resume point in the DB, the cached list
+        keeps rendering the *old* resume bar — and the resume-on-play dialog
+        reads that stale list item — until the user manually navigates away and
+        back.  A Container.Refresh re-reads the now-correct DB state for them.
+
+        Guarded on the active folder path so we only refresh when a watchorder
+        listing is actually on screen; refreshing an unrelated window would be
+        disruptive and pointless.
+        """
+        try:
+            folder = xbmc.getInfoLabel("Container.FolderPath") or ""
+            if folder.startswith("plugin://{}/".format(ADDON_ID)):
+                xbmc.executebuiltin("Container.Refresh")
+                xbmc.log("{}:Refreshed watchorder listing {}".format(
+                    ADDON_ID, folder), xbmc.LOGINFO)
+        except Exception as e:
+            xbmc.log("{}:Failed to refresh container: {}".format(
+                ADDON_ID, e), xbmc.LOGWARNING)
+
     def onAVStarted(self):
         """Called when audio/video playback starts. Prime the cache."""
         # New content is starting — discard any leftover session IDs from the
@@ -288,6 +313,7 @@ class PlaybackMonitor(xbmc.Player):
 
         self._clear_state()
         self._clear_session()
+        self._refresh_watchorder_container()
 
     def onPlayBackStopped(self):
         """Called when playback is stopped."""
@@ -348,6 +374,7 @@ class PlaybackMonitor(xbmc.Player):
             xbmc.log("{}:Error handling playback stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
         self._clear_state()
+        self._refresh_watchorder_container()
 
     def onPlayBackPaused(self):
         """Called when playback is paused."""

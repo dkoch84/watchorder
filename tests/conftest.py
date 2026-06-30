@@ -112,6 +112,7 @@ def _install_kodi_fakes() -> None:
 
     xbmcplugin = types.ModuleType("xbmcplugin")
     xbmcplugin.setContent = MagicMock()
+    xbmcplugin.setResolvedUrl = MagicMock()
     xbmcplugin.addDirectoryItem = MagicMock()
     xbmcplugin.addSortMethod = MagicMock()
     xbmcplugin.endOfDirectory = MagicMock()

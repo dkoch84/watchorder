@@ -701,18 +701,31 @@ def _add_linked_movies(tvshowid):
 def play_episode(episodeid, file):
     from main import HANDLE, jsonrpc
 
+    # Always fetch the identity metadata.  Kodi can write the resolved
+    # ListItem's InfoTag back to the library row (matched by dbid) when
+    # playback ends; if season/episode/title are left unset it clobbers them
+    # with empties (-1/-1/""), orphaning the episode out of its show.  See
+    # task #503.  We therefore populate them on the resolved item so any such
+    # writeback is a harmless no-op.
+    result = jsonrpc(
+        "VideoLibrary.GetEpisodeDetails",
+        {"episodeid": episodeid,
+         "properties": ["file", "title", "season", "episode", "showtitle"]},
+    )
+    details = result.get("episodedetails", {}) if result else {}
     if not file:
-        result = jsonrpc(
-            "VideoLibrary.GetEpisodeDetails",
-            {"episodeid": episodeid, "properties": ["file"]},
-        )
-        if result and "episodedetails" in result:
-            file = result["episodedetails"].get("file", "")
+        file = details.get("file", "")
     if file:
         li = xbmcgui.ListItem(path=file)
         tag = li.getVideoInfoTag()
         tag.setMediaType("episode")
         tag.setDbId(episodeid)
+        tag.setTitle(details.get("title", ""))
+        tag.setTvShowTitle(details.get("showtitle", ""))
+        if details.get("season") is not None:
+            tag.setSeason(details["season"])
+        if details.get("episode") is not None:
+            tag.setEpisode(details["episode"])
 
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:

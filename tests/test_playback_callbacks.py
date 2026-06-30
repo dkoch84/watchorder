@@ -696,3 +696,68 @@ def test_ended_prefers_current_id_over_session_id(main, monitor, jsonrpc_calls):
     # Both ids cleared afterwards.
     assert monitor.current_episodeid is None
     assert monitor._session_episodeid is None
+
+
+# ---------------------------------------------------------------------------
+# Task #503 — stale plugin-directory cache refresh
+# ---------------------------------------------------------------------------
+# Kodi caches the watchorder listing built when the user pressed play, so the
+# resume bar (and the list item the resume-on-play dialog reads) keep showing
+# the OLD resume point after the service clears it in the DB.  When a
+# watchorder listing is on screen, the callbacks must issue a Container.Refresh
+# so the list re-reads the now-correct DB state — exactly what the user's
+# manual "back out and go back in" does.
+
+
+def test_ended_refreshes_when_watchorder_listing_on_screen(
+    main, monitor, jsonrpc_calls, monkeypatch
+):
+    import xbmc
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor.current_episodeid = 4003
+    monitor.onPlayBackEnded()
+
+    xbmc.executebuiltin.assert_any_call("Container.Refresh")
+
+
+def test_stopped_refreshes_when_watchorder_listing_on_screen(
+    main, monitor, jsonrpc_calls, monkeypatch
+):
+    import xbmc
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "plugin://plugin.video.watchorder/?action=episodes&tvshowid=1",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor.current_episodeid = 4003
+    _set_player(monitor, playing=False, position=1376, duration=1381)
+    monitor.onPlayBackStopped()
+
+    xbmc.executebuiltin.assert_any_call("Container.Refresh")
+
+
+def test_no_refresh_when_other_window_on_screen(
+    main, monitor, jsonrpc_calls, monkeypatch
+):
+    """Don't disrupt an unrelated window — only refresh watchorder listings."""
+    import xbmc
+    monkeypatch.setattr(
+        xbmc, "getInfoLabel",
+        lambda _label: "videodb://tvshows/titles/",
+    )
+    xbmc.executebuiltin.reset_mock()
+
+    monitor.current_episodeid = 4003
+    monitor.onPlayBackEnded()
+
+    refresh_calls = [
+        c for c in xbmc.executebuiltin.call_args_list
+        if c.args and c.args[0] == "Container.Refresh"
+    ]
+    assert refresh_calls == []

@@ -192,18 +192,25 @@ def list_movies(tag=None, collections_only=False):
 def play_movie(movieid, file):
     from main import HANDLE, jsonrpc
 
+    # Always fetch identity metadata so the resolved ListItem carries a proper
+    # title/year.  Kodi can write a resolved item's InfoTag back to the library
+    # row (matched by dbid) on playback; leaving these unset risks clobbering
+    # the title with an empty string.  Mirrors the episode fix for task #503.
+    result = jsonrpc(
+        "VideoLibrary.GetMovieDetails",
+        {"movieid": movieid, "properties": ["file", "title", "year"]},
+    )
+    details = result.get("moviedetails", {}) if result else {}
     if not file:
-        result = jsonrpc(
-            "VideoLibrary.GetMovieDetails",
-            {"movieid": movieid, "properties": ["file"]},
-        )
-        if result and "moviedetails" in result:
-            file = result["moviedetails"].get("file", "")
+        file = details.get("file", "")
     if file:
         li = xbmcgui.ListItem(path=file)
         tag = li.getVideoInfoTag()
         tag.setMediaType("movie")
         tag.setDbId(movieid)
+        tag.setTitle(details.get("title", ""))
+        if details.get("year"):
+            tag.setYear(details["year"])
 
         xbmcplugin.setResolvedUrl(HANDLE, True, li)
     else:
