@@ -110,6 +110,25 @@ def _install_kodi_fakes() -> None:
     xbmcgui.ListItem = MagicMock()
     xbmcgui.Dialog = MagicMock()
 
+    # Home-window property store backs the addon's lightweight cache
+    # (collections_mod._cache_get/_set, used by config and settings caching).
+    _window_props = {}
+
+    class _Window:
+        def __init__(self, _window_id=0):
+            pass
+
+        def getProperty(self, key):
+            return _window_props.get(key, "")
+
+        def setProperty(self, key, value):
+            _window_props[key] = value
+
+        def clearProperty(self, key):
+            _window_props.pop(key, None)
+
+    xbmcgui.Window = _Window
+
     xbmcplugin = types.ModuleType("xbmcplugin")
     xbmcplugin.setContent = MagicMock()
     xbmcplugin.setResolvedUrl = MagicMock()

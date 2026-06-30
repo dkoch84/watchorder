@@ -37,9 +37,27 @@ def jsonrpc(method, params=None):
         return None
 
 
+# Display-preference settings (flatten tvshows, include specials, select-first-
+# unwatched) are read on most navigations but changed very rarely.  Cache them
+# briefly in the shared window-property store so a browsing session doesn't
+# repeat the lookup on every folder.  The TTL is short so a genuine settings
+# change still takes effect within a few seconds.
+_SETTING_CACHE_TTL = 30
+
+
 def get_kodi_setting(setting_id):
+    from collections_mod import _cache_get, _cache_set
+
+    cache_key = "setting." + setting_id
+    cached = _cache_get(cache_key, ttl=_SETTING_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     result = jsonrpc("Settings.GetSettingValue", {"setting": setting_id})
     if result and "value" in result:
+        # Only successful reads are cached — never a failed/None lookup, so a
+        # transient JSON-RPC error doesn't get pinned for the whole TTL.
+        _cache_set(cache_key, result["value"])
         return result["value"]
     return None
 
@@ -50,7 +68,10 @@ def _select_first_unwatched(first_unwatched_index):
     setting = get_kodi_setting("videolibrary.tvshowsselectfirstunwatcheditem")
     if not setting or setting == 0:
         return
-    xbmc.sleep(150)
+    # Brief settle so the container has rendered before we move focus.  Kept
+    # small to avoid adding latency to every season/episode browse; if the
+    # focus occasionally fails to land on slower hardware, raise this value.
+    xbmc.sleep(50)
     container_id = xbmc.getInfoLabel("System.CurrentControlID")
     if container_id:
         xbmc.executebuiltin(
