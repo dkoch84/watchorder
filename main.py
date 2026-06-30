@@ -249,55 +249,13 @@ class PlaybackMonitor(xbmc.Player):
         self._session_episodeid = None
         self._session_movieid = None
 
-    def _refresh_watchorder_container(self):
-        """Schedule a refresh of the watchorder listing once the player closes.
-
-        Kodi bakes the watched overlay and resume bar into the list items when
-        the directory is first built (i.e. when the user pressed play).  When
-        this service marks the item watched and clears its resume point in the
-        DB, the open list keeps rendering the *old* resume bar — and the
-        resume-on-play dialog reads that stale list item — until the user
-        navigates away and back.
-
-        Refreshing from the player callback itself is too early: fullscreen
-        video is still up, so Container.Refresh is a no-op and Kodi then
-        redisplays the stale list once the video tears down.  We therefore wait
-        (off the callback thread) for the player window to close, then refresh.
-        """
-        import threading
-        threading.Thread(target=self._deferred_refresh, daemon=True).start()
-
-    def _deferred_refresh(self):
-        """Wait for fullscreen video to close, then refresh the listing."""
-        monitor = xbmc.Monitor()
-        closed = False
-        for _ in range(30):  # poll up to ~3s
-            if monitor.waitForAbort(0.1):
-                return
-            if not xbmc.getCondVisibility("Window.IsVisible(fullscreenvideo)"):
-                closed = True
-                break
-        if not closed:
-            # Still in the player — e.g. the user went straight into the next
-            # episode.  They aren't looking at the list, so don't refresh.
-            return
-        self._refresh_now()
-
-    def _refresh_now(self):
-        """Refresh the active container iff it is a watchorder listing.
-
-        Guarded on the folder path so we only refresh when a watchorder listing
-        is on screen; refreshing an unrelated window would be disruptive.
-        """
-        try:
-            folder = xbmc.getInfoLabel("Container.FolderPath") or ""
-            if folder.startswith("plugin://{}/".format(ADDON_ID)):
-                xbmc.executebuiltin("Container.Refresh")
-                xbmc.log("{}:Refreshed watchorder listing {}".format(
-                    ADDON_ID, folder), xbmc.LOGINFO)
-        except Exception as e:
-            xbmc.log("{}:Failed to refresh container: {}".format(
-                ADDON_ID, e), xbmc.LOGWARNING)
+    # NOTE: there is intentionally no post-playback Container.Refresh here.
+    # Kodi already reloads the directory when returning from fullscreen video,
+    # and an explicit Container.Refresh from the service collides with that
+    # in-progress reload ("CGUIMediaWindow::OnMessage - updating in progress"),
+    # which intermittently left a blank list.  The watched overlay / resume bar
+    # update on Kodi's own return-from-playback reload (or on next navigation);
+    # we do not force it.
 
     def onAVStarted(self):
         """Called when audio/video playback starts. Prime the cache."""
@@ -359,7 +317,6 @@ class PlaybackMonitor(xbmc.Player):
 
         self._clear_state()
         self._clear_session()
-        self._refresh_watchorder_container()
 
     def onPlayBackStopped(self):
         """Called when playback is stopped."""
@@ -420,7 +377,6 @@ class PlaybackMonitor(xbmc.Player):
             xbmc.log("{}:Error handling playback stop: {}".format(ADDON_ID, e), xbmc.LOGWARNING)
 
         self._clear_state()
-        self._refresh_watchorder_container()
 
     def onPlayBackPaused(self):
         """Called when playback is paused."""
